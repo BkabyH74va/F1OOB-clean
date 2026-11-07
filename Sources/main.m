@@ -106,8 +106,7 @@ static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_
 }
 
 static id<MTLDevice> get_metal_device(void) {
-    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
-    if (!dev) {
+id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();    if (!dev) {
         NSLog(@"[ERROR] No Metal device");
     }
     return dev;
