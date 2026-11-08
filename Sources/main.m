@@ -51,13 +51,14 @@
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
-    // Run exploit in background after short delay
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self runExploit];
-    });
+    // Run exploit SYNCHRONOUSLY on main thread
+    [self log:@"About to run exploit..."];
+    [self runExploit];
 }
 
 - (void)runExploit {
+    [self log:@"runExploit ENTERED"];
+    
     [self log:@"[1] Loading IOSurface..."];
     
     void *handle = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface", RTLD_NOW);
