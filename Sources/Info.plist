@@ -24,36 +24,15 @@
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
         <false/>
-        <key>UISceneConfigurations</key>
-        <dict>
-            <key>UIWindowSceneSessionRoleApplication</key>
-            <array>
-                <dict>
-                    <key>UISceneConfigurationName</key>
-                    <string>Default Configuration</string>
-                    <key>UISceneDelegateClassName</key>
-                    <string>SceneDelegate</string>
-                </dict>
-            </array>
-        </dict>
     </dict>
-    <key>UISupportedInterfaceOrientations</key>
-    <array>
-        <string>UIInterfaceOrientationPortrait</string>
-        <string>UIInterfaceOrientationLandscapeLeft</string>
-        <string>UIInterfaceOrientationLandscapeRight</string>
-        <string>UIInterfaceOrientationPortraitUpsideDown</string>
-    </array>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UIFileSharingEnabled</key>
+    <true/>
     <key>UIDeviceFamily</key>
     <array>
         <integer>1</integer>
         <integer>2</integer>
     </array>
-    <key>UILaunchScreen</key>
-    <dict/>
-    <key>UIFileSharingEnabled</key>
-    <true/>
-    <key>ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8</key>
-    <true/>
 </dict>
 </plist>
