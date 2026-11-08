@@ -1,69 +1,105 @@
-cd ~/ios_research
+#import <UIKit/UIKit.h>
+#import <IOKit/IOKitLib.h>
 
-python3 << 'EOF'
-import struct
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@property (strong, nonatomic) UITextView *logView;
+@end
 
-def load_data_const(path):
-    with open(path, 'rb') as f:
-        return f.read()
+@implementation AppDelegate
 
-data_2701 = load_data_const('data_const_2701.bin')
-data_272 = load_data_const('data_const_272.bin')
-
-print("=== Filtering for REAL vtable changes ===\n")
-
-# The base shift is approximately 0x5000 for PAC pointers
-# Real changes: pointers point to DIFFERENT functions, not just shifted
-
-real_vtable_changes = []
-
-for i in range(0, min(len(data_2701), len(data_272)) - 8, 8):
-    val_2701 = struct.unpack('<Q', data_2701[i:i+8])[0]
-    val_272 = struct.unpack('<Q', data_272[i:i+8])[0]
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+    self.window.backgroundColor = [UIColor blackColor];
     
-    if val_2701 == val_272:
-        continue
+    UIViewController *vc = [[UIViewController alloc] init];
+    self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
+    self.logView.editable = NO;
+    self.logView.text = @"Auth Bypass Fuzzer\n\n";
+    vc.view = self.logView;
     
-    # Check if PAC-signed pointer (high bits 0x8011...)
-    is_pac_2701 = (val_2701 >> 48) == 0x8011
-    is_pac_272 = (val_272 >> 48) == 0x8011
+    self.window.rootViewController = vc;
+    [self.window makeKeyAndVisible];
     
-    if is_pac_2701 and is_pac_272:
-        # Extract lower 48 bits (actual address)
-        addr_2701 = val_2701 & 0x0000FFFFFFFFFFFF
-        addr_272 = val_272 & 0x0000FFFFFFFFFFFF
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [self fuzz];
+    });
+    
+    return YES;
+}
+
+- (void)log:(NSString *)msg {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.logView.text = [self.logView.text stringByAppendingString:[msg stringByAppendingString:@"\n"]];
+    });
+}
+
+- (void)fuzz {
+    [self log:@"[1] Searching for privileged IOKit services..."];
+    
+    // Services known to have privileged operations
+    NSArray *services = @[
+        @"AppleAPFSVolume",
+        @"AppleAPFSContainer",
+        @"AppleAPFSVolumeBSDClient",
+        @"AppleAPFSContainerBSDClient",
+        @"AppleAPFSManager",
+        @"AppleFileSystemDriver",
+    ];
+    
+    for (NSString *name in services) {
+        [self log:[NSString stringWithFormat:@"[2] Trying %@...", name]];
         
-        # Calculate shift
-        shift = addr_272 - addr_2701
+        io_service_t service = IOServiceGetMatchingService(0, IOServiceMatching([name UTF8String]));
+        if (!service) {
+            [self log:[NSString stringWithFormat:@"  %@ not found", name]];
+            continue;
+        }
         
-        # If shift is NOT approximately 0x5000, this is interesting!
-        if abs(shift - 0x5000) > 0x100:
-            vmaddr = 0xfffffe0007e14000 + i
-            real_vtable_changes.append({
-                'offset': i,
-                'vmaddr': vmaddr,
-                'val_2701': val_2701,
-                'val_272': val_272,
-                'addr_2701': addr_2701,
-                'addr_272': addr_272,
-                'shift': shift
-            })
+        [self log:[NSString stringWithFormat:@"  Found %@: 0x%x", name, service]];
+        
+        // Try to open with different types
+        for (uint32_t type = 0; type < 10; type++) {
+            io_connect_t conn;
+            kern_return_t kr = IOServiceOpen(service, mach_task_self(), type, &conn);
+            
+            if (kr == KERN_SUCCESS) {
+                [self log:[NSString stringWithFormat:@"  OPENED %@ type %u: 0x%x", name, type, conn]];
+                
+                // Fuzz all selectors
+                for (int sel = 0; sel < 200; sel++) {
+                    uint64_t input[20] = {0};
+                    uint64_t output[20] = {0};
+                    uint32_t outputCnt = 20;
+                    
+                    // Try different input patterns
+                    for (int i = 0; i < 20; i++) {
+                        input[i] = (i == 0) ? 0 : 0x4141414141414141;
+                    }
+                    
+                    kr = IOConnectCallMethod(conn, sel, input, 20, NULL, 0, output, &outputCnt, NULL, NULL);
+                    
+                    if (kr == KERN_SUCCESS) {
+                        [self log:[NSString stringWithFormat:@"  *** %@ selector %d SUCCESS! ***", name, sel]];
+                    } else if (kr != 0xe00002c2) {
+                        [self log:[NSString stringWithFormat:@"  %@ selector %d: 0x%x", name, sel, kr]];
+                    }
+                }
+                
+                IOServiceClose(conn);
+            }
+        }
+        
+        IOObjectRelease(service);
+    }
+    
+    [self log:@"[3] Done"];
+}
 
-print(f"Found {len(real_vtable_changes)} REAL vtable changes")
+@end
 
-# Show first 20
-print("\n=== First 20 REAL vtable changes ===")
-for i, change in enumerate(real_vtable_changes[:20]):
-    print(f"\n{i+1}. Offset 0x{change['offset']:x} (VM: 0x{change['vmaddr']:x})")
-    print(f"   27.0.1: 0x{change['val_2701']:016x}")
-    print(f"   27.2:   0x{change['val_272']:016x}")
-    print(f"   Shift:  0x{change['shift']:x} (NOT ~0x5000)")
-    print(f"   *** REAL CHANGE — DIFFERENT FUNCTION ***")
-
-# Save for analysis
-with open('real_vtable_changes.txt', 'w') as f:
-    for change in real_vtable_changes:
-        f.write(f"0x{change['vmaddr']:x} 0x{change['val_2701']:x} 0x{change['val_272']:x}\n")
-
-print(f"\nSaved to real_vtable_changes.txt")
-EOF
+int main(int argc, char *argv[]) {
+    @autoreleasepool {
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+    }
+}
