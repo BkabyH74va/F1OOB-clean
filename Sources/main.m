@@ -46,7 +46,7 @@
     
     // Test 1: Metal
     [self log:@"TEST 1: Metal device..."];
-    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
     if (dev) {
         [self log:[NSString stringWithFormat:@"PASS: Metal device = %@", dev.name]];
     } else {
