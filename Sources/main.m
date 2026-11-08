@@ -4,6 +4,7 @@
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UITextView *logView;
+@property (strong, nonatomic) NSMutableString *logBuffer;
 @end
 
 @implementation AppDelegate
@@ -15,13 +16,14 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.text = @"IOKit Service Enumerator\n\n";
+    self.logView.text = @"IOKit Enumerator Starting...\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+    // Delay IOKit work to let UI fully load
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [self enumerate];
     });
     
@@ -35,11 +37,10 @@
 }
 
 - (void)enumerate {
-    [self log:@"[1] Enumerating IOKit services...\n"];
+    [self log:@"[1] Starting enumeration...\n"];
     
     int openable = 0, blocked = 0, notfound = 0, total = 0;
     
-    // Services to test
     NSArray *services = @[
         @"AppleAPFSVolume",
         @"AppleAPFSContainer",
@@ -70,43 +71,51 @@
     
     for (NSString *name in services) {
         total++;
-        [self log:[NSString stringWithFormat:@"[2] Testing %@...", name]];
         
+        // Log on main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"Testing %@...\n", name]];
+        });
+        
+        // Do IOKit work on background thread
         io_service_t service = IOServiceGetMatchingService(0, IOServiceMatching([name UTF8String]));
         if (!service) {
             notfound++;
-            [self log:[NSString stringWithFormat:@"  %@ NOT FOUND", name]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  %@ NOT FOUND\n", name]];
+            });
             continue;
         }
         
-        // Try to open
         io_connect_t conn;
         kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
         
         if (kr == KERN_SUCCESS) {
             openable++;
-            [self log:[NSString stringWithFormat:@"  *** %@ OPENED! (CWE-862 candidate) ***", name]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  *** %@ OPENED! ***\n", name]];
+            });
             IOServiceClose(conn);
         } else if (kr == kIOReturnNotPermitted) {
             blocked++;
-            [self log:[NSString stringWithFormat:@"  %@ BLOCKED (sandbox)", name]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  %@ BLOCKED\n", name]];
+            });
         } else {
-            [self log:[NSString stringWithFormat:@"  %@ error: 0x%x", name, kr]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  %@ error: 0x%x\n", name, kr]];
+            });
         }
         
         IOObjectRelease(service);
         
-        // Small delay to prevent watchdog
-        usleep(10000);
+        // Critical: yield to prevent watchdog
+        usleep(50000); // 50ms
     }
     
-    [self log:[NSString stringWithFormat:@"\n[3] Summary: %d total, %d openable, %d blocked, %d not found", total, openable, blocked, notfound]];
-    
-    if (openable > 0) {
-        [self log:@"\n!!! CWE-862 CANDIDATES FOUND !!!"];
-    } else {
-        [self log:@"\nNo openable services found."];
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"\n=== DONE: %d total, %d open, %d blocked, %d not found ===\n", total, openable, blocked, notfound]];
+    });
 }
 
 @end
