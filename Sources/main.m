@@ -43,13 +43,14 @@
         @"/System/Library/CoreServices/SystemVersion.plist",
     ];
     
+    // Use placeholder instead of %@ to avoid format string crashes
     NSArray *patterns = @[
-        @"../../../../../../%@",
-        @"..%%2f..%%2f..%%2f..%%2f..%%2f..%%2f%@",
-        @"..%2f..%2f..%2f..%2f..%2f..%2f%@",
-        @"%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%@",
-        @"%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%@",
-        @"....//....//....//....//....//....//%@",
+        @"../../../../../../TARGET",
+        @"..%%2f..%%2f..%%2f..%%2f..%%2f..%%2fTARGET",
+        @"..%2f..%2f..%2f..%2f..%2f..%2fTARGET",
+        @"%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/TARGET",
+        @"%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/TARGET",
+        @"....//....//....//....//....//....//TARGET",
     ];
     
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -60,7 +61,8 @@
         [self log:logLine];
         
         for (NSString *pattern in patterns) {
-            NSString *traversal = [NSString stringWithFormat:pattern, target];
+            // Use stringByReplacingOccurrencesOfString instead of stringWithFormat:
+            NSString *traversal = [pattern stringByReplacingOccurrencesOfString:@"TARGET" withString:target];
             NSString *fullPath = [home stringByAppendingPathComponent:traversal];
             
             // Test 1: fileExistsAtPath
