@@ -182,7 +182,7 @@ static int test_cross_object_write(void) {
     uint64_t f1_gpu_va = agx_map_surface(surface_id, &span, &agx_conn);
     if (!f1_gpu_va) return -1;
     
-    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
     if (!dev) {
         NSLog(@"[ERROR] No Metal device");
         return -1;
