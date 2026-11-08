@@ -31,5 +31,10 @@
     <true/>
     <key>ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8</key>
     <true/>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
 </dict>
 </plist>
