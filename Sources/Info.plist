@@ -20,8 +20,6 @@
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    
-    <!-- Required for iOS 27 - UIScene lifecycle -->
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
@@ -39,28 +37,20 @@
             </array>
         </dict>
     </dict>
-    
-    <!-- Required for iOS 27 - Orientation support -->
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
         <string>UIInterfaceOrientationPortraitUpsideDown</string>
-    </key>
-    
-    <!-- iPad support -->
+    </array>
     <key>UIDeviceFamily</key>
     <array>
         <integer>1</integer>
         <integer>2</integer>
     </array>
-    
-    <!-- Launch screen -->
     <key>UILaunchScreen</key>
     <dict/>
-    
-    <!-- File sharing -->
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8</key>
