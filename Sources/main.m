@@ -58,7 +58,7 @@ static int load_iosurface(void) {
 // MARK: - F1 Surface Creation via IOKit
 
 static uint32_t create_f1_surface_iokit(void) {
-    io_service_t iosurface_root = IOServiceGetMatchingService(kIOMasterPortDefault,
+    io_service_t iosurface_root = IOServiceGetMatchingService(0,
         IOServiceMatching("IOSurfaceRoot"));
     if (!iosurface_root) {
         NSLog(@"[ERROR] IOSurfaceRoot not found");
@@ -124,14 +124,14 @@ static uint32_t create_f1_surface_iokit(void) {
 
 static uint64_t agx_map_surface(uint32_t surface_id, uint64_t *span, io_connect_t *agx_conn) {
     // Try iPad A16 GPU first (AGXAcceleratorG16P), then fallback
-    io_service_t agx = IOServiceGetMatchingService(kIOMasterPortDefault,
+    io_service_t agx = IOServiceGetMatchingService(0,
         IOServiceMatching("AGXAcceleratorG16P"));
     if (!agx) {
-        agx = IOServiceGetMatchingService(kIOMasterPortDefault,
+        agx = IOServiceGetMatchingService(0,
             IOServiceMatching("AGXAcceleratorG18P"));
     }
     if (!agx) {
-        agx = IOServiceGetMatchingService(kIOMasterPortDefault,
+        agx = IOServiceGetMatchingService(0,
             IOServiceMatching("AGXAcceleratorG14P"));
     }
     if (!agx) {
