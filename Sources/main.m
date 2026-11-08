@@ -15,7 +15,7 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.text = @"IOKit APFS Fuzzer\n\n";
+    self.logView.text = @"Auth Bypass Fuzzer\n\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
@@ -35,64 +35,65 @@
 }
 
 - (void)fuzz {
-    [self log:@"[1] Searching for APFS services..."];
+    [self log:@"[1] Searching for privileged IOKit services..."];
     
-    // Search for any service with "APFS" in the name
-    io_iterator_t iterator;
-    kern_return_t kr = IOServiceGetMatchingServices(0, IOServiceNameMatching("AppleAPFS"), &iterator);
+    // Services known to have privileged operations
+    NSArray *services = @[
+        @"AppleAPFSVolume",
+        @"AppleAPFSContainer",
+        @"AppleAPFSVolumeBSDClient",
+        @"AppleAPFSContainerBSDClient",
+        @"AppleAPFSManager",
+        @"AppleFileSystemDriver",
+    ];
     
-    if (kr != KERN_SUCCESS) {
-        [self log:@"No AppleAPFS services found"];
-        // Try broader search
-        kr = IOServiceGetMatchingServices(0, IOServiceMatching("IOService"), &iterator);
-    }
-    
-    io_service_t service;
-    int count = 0;
-    while ((service = IOIteratorNext(iterator)) != 0) {
-        count++;
+    for (NSString *name in services) {
+        [self log:[NSString stringWithFormat:@"[2] Trying %@...", name]];
         
-        // Get service name
-        io_name_t name;
-        IORegistryEntryGetName(service, name);
+        io_service_t service = IOServiceGetMatchingService(0, IOServiceMatching([name UTF8String]));
+        if (!service) {
+            [self log:[NSString stringWithFormat:@"  %@ not found", name]];
+            continue;
+        }
         
-        // Check if APFS-related
-        NSString *nameStr = [NSString stringWithUTF8String:name];
-        if ([nameStr containsString:@"APFS"] || [nameStr containsString:@"apfs"] || 
-            [nameStr containsString:@"Volume"] || [nameStr containsString:@"Disk"]) {
-            
-            [self log:[NSString stringWithFormat:@"[2] Found: %@ (0x%x)", nameStr, service]];
-            
-            // Try to open
+        [self log:[NSString stringWithFormat:@"  Found %@: 0x%x", name, service]];
+        
+        // Try to open with different types
+        for (uint32_t type = 0; type < 10; type++) {
             io_connect_t conn;
-            kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+            kern_return_t kr = IOServiceOpen(service, mach_task_self(), type, &conn);
+            
             if (kr == KERN_SUCCESS) {
-                [self log:[NSString stringWithFormat:@"[3] Opened %@: 0x%x", nameStr, conn]];
+                [self log:[NSString stringWithFormat:@"  OPENED %@ type %u: 0x%x", name, type, conn]];
                 
-                // Fuzz selectors
-                for (int sel = 0; sel < 100; sel++) {
-                    uint64_t input[10] = {0};
-                    uint64_t output[10] = {0};
-                    uint32_t outputCnt = 10;
+                // Fuzz all selectors
+                for (int sel = 0; sel < 200; sel++) {
+                    uint64_t input[20] = {0};
+                    uint64_t output[20] = {0};
+                    uint32_t outputCnt = 20;
                     
-                    kr = IOConnectCallMethod(conn, sel, input, 10, NULL, 0, output, &outputCnt, NULL, NULL);
-                    if (kr != KERN_SUCCESS && kr != 0xe00002c2) {
-                        [self log:[NSString stringWithFormat:@"[4] %@ selector %d: 0x%x", nameStr, sel, kr]];
+                    // Try different input patterns
+                    for (int i = 0; i < 20; i++) {
+                        input[i] = (i == 0) ? 0 : 0x4141414141414141;
+                    }
+                    
+                    kr = IOConnectCallMethod(conn, sel, input, 20, NULL, 0, output, &outputCnt, NULL, NULL);
+                    
+                    if (kr == KERN_SUCCESS) {
+                        [self log:[NSString stringWithFormat:@"  *** %@ selector %d SUCCESS! ***", name, sel]];
+                    } else if (kr != 0xe00002c2) {
+                        [self log:[NSString stringWithFormat:@"  %@ selector %d: 0x%x", name, sel, kr]];
                     }
                 }
                 
                 IOServiceClose(conn);
-            } else {
-                [self log:[NSString stringWithFormat:@"[3] Failed to open %@: 0x%x", nameStr, kr]];
             }
         }
         
         IOObjectRelease(service);
-        if (count > 100) break;
     }
     
-    IOObjectRelease(iterator);
-    [self log:@"[5] Done"];
+    [self log:@"[3] Done"];
 }
 
 @end
