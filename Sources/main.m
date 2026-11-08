@@ -4,8 +4,11 @@
 #import <mach/mach.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
+#import <sys/ioctl.h>
 #import <fcntl.h>
 #import <unistd.h>
+#import <errno.h>
+#import <string.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -78,7 +81,6 @@
             [self log:[NSString stringWithFormat:@"[3] OPENED %s (fd=%d)", devices[i], fd]];
             
             // Try to trigger ioctl calls that might hit AppleAPFSVolumeBSDClient
-            // These are common APFS ioctls
             for (unsigned long cmd = 0; cmd < 100; cmd++) {
                 char buf[4096] = {0};
                 int result = ioctl(fd, cmd, buf);
@@ -104,7 +106,6 @@
         while ((service = IOIteratorNext(iterator)) != 0) {
             count++;
             
-            // Get properties
             CFMutableDictionaryRef props;
             if (IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS) {
                 NSDictionary *dict = (__bridge NSDictionary *)props;
@@ -114,13 +115,11 @@
                 if (bsdName && [content containsString:@"Apple_APFS"]) {
                     [self log:[NSString stringWithFormat:@"[6] Found APFS media: %@ (%@)", bsdName, content]];
                     
-                    // Try to open
                     io_connect_t conn;
                     kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
                     if (kr == KERN_SUCCESS) {
                         [self log:[NSString stringWithFormat:@"[7] Opened %@: 0x%x", bsdName, conn]];
                         
-                        // Try selectors
                         for (int sel = 0; sel < 50; sel++) {
                             uint64_t input[10] = {0};
                             uint64_t output[10] = {0};
