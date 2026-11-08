@@ -1,105 +1,216 @@
-#import <UIKit/UIKit.h>
+// iokit_enum_fast.mm
+// Target: iOS 27.0.1
+// Bug class: CWE-862 Missing Authorization
+// Strategy: Enumerate all IOKit services, log which ones open WITHOUT sandbox blocking
+
+#import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
+#import <mach/mach.h>
+#import <stdio.h>
+#import <stdlib.h>
+#import <string.h>
+#import <unistd.h>
 
-@interface AppDelegate : UIResponder <UIApplicationDelegate>
-@property (strong, nonatomic) UIWindow *window;
-@property (strong, nonatomic) UITextView *logView;
-@end
+#define LOG_FILE "/var/mobile/Media/Downloads/iokit_enum_log.txt"
 
-@implementation AppDelegate
+FILE *g_log = NULL;
+int g_openable_count = 0;
+int g_blocked_count = 0;
+int g_total_count = 0;
 
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-    self.window.backgroundColor = [UIColor blackColor];
-    
-    UIViewController *vc = [[UIViewController alloc] init];
-    self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
-    self.logView.editable = NO;
-    self.logView.text = @"Auth Bypass Fuzzer\n\n";
-    vc.view = self.logView;
-    
-    self.window.rootViewController = vc;
-    [self.window makeKeyAndVisible];
-    
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self fuzz];
-    });
-    
-    return YES;
+void log_msg(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_log, fmt, args);
+    va_end(args);
+    fflush(g_log);
 }
 
-- (void)log:(NSString *)msg {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.logView.text = [self.logView.text stringByAppendingString:[msg stringByAppendingString:@"\n"]];
-    });
-}
-
-- (void)fuzz {
-    [self log:@"[1] Searching for privileged IOKit services..."];
+// Quick test: can we open this service?
+int test_service(const char *name) {
+    kern_return_t kr;
+    io_service_t service;
+    io_connect_t connect;
     
-    // Services known to have privileged operations
-    NSArray *services = @[
-        @"AppleAPFSVolume",
-        @"AppleAPFSContainer",
-        @"AppleAPFSVolumeBSDClient",
-        @"AppleAPFSContainerBSDClient",
-        @"AppleAPFSManager",
-        @"AppleFileSystemDriver",
-    ];
+    // Get service by name
+    service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(name));
+    if (!service) return -1; // Not found
     
-    for (NSString *name in services) {
-        [self log:[NSString stringWithFormat:@"[2] Trying %@...", name]];
-        
-        io_service_t service = IOServiceGetMatchingService(0, IOServiceMatching([name UTF8String]));
-        if (!service) {
-            [self log:[NSString stringWithFormat:@"  %@ not found", name]];
-            continue;
-        }
-        
-        [self log:[NSString stringWithFormat:@"  Found %@: 0x%x", name, service]];
-        
-        // Try to open with different types
-        for (uint32_t type = 0; type < 10; type++) {
-            io_connect_t conn;
-            kern_return_t kr = IOServiceOpen(service, mach_task_self(), type, &conn);
-            
-            if (kr == KERN_SUCCESS) {
-                [self log:[NSString stringWithFormat:@"  OPENED %@ type %u: 0x%x", name, type, conn]];
-                
-                // Fuzz all selectors
-                for (int sel = 0; sel < 200; sel++) {
-                    uint64_t input[20] = {0};
-                    uint64_t output[20] = {0};
-                    uint32_t outputCnt = 20;
-                    
-                    // Try different input patterns
-                    for (int i = 0; i < 20; i++) {
-                        input[i] = (i == 0) ? 0 : 0x4141414141414141;
-                    }
-                    
-                    kr = IOConnectCallMethod(conn, sel, input, 20, NULL, 0, output, &outputCnt, NULL, NULL);
-                    
-                    if (kr == KERN_SUCCESS) {
-                        [self log:[NSString stringWithFormat:@"  *** %@ selector %d SUCCESS! ***", name, sel]];
-                    } else if (kr != 0xe00002c2) {
-                        [self log:[NSString stringWithFormat:@"  %@ selector %d: 0x%x", name, sel, kr]];
-                    }
-                }
-                
-                IOServiceClose(conn);
-            }
-        }
-        
-        IOObjectRelease(service);
+    // Try to open
+    kr = IOServiceOpen(service, mach_task_self(), 0, &connect);
+    IOObjectRelease(service);
+    
+    if (kr == KERN_SUCCESS) {
+        IOServiceClose(connect);
+        return 1; // Openable
+    } else if (kr == kIOReturnNotPermitted || kr == kIOReturnPrivilege) {
+        return 0; // Blocked by sandbox/MACF
+    } else {
+        return -2; // Other error
     }
-    
-    [self log:@"[3] Done"];
 }
-
-@end
 
 int main(int argc, char *argv[]) {
-    @autoreleasepool {
-        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+    g_log = fopen(LOG_FILE, "w");
+    if (!g_log) g_log = stdout;
+    
+    log_msg("=== IOKit Service Enumeration Started ===\n");
+    log_msg("Looking for CWE-862 candidates (openable without entitlement)\n\n");
+    
+    // Common IOKit services to test (known + suspected)
+    const char *services[] = {
+        // Storage/FS (APFS blocked, try others)
+        "AppleAPFSUserClient",
+        "AppleAPFSContainerBSDClient",
+        "AppleAPFSVolumeBSDClient",
+        "AppleAPFSSnapshotBSDClient",
+        "AppleAPFSKeybagUserClient",
+        "AppleAPFSEncryptedBSDClient",
+        "AppleAPFSHealthDeviceBSDClient",
+        "AppleAPFSTreeBSDClient",
+        "AppleAPFSMaintenanceDeviceBSDClient",
+        "AppleAPFSSpaceManagerBSDClient",
+        "AppleAPFSEncryptedDeviceBSDClient",
+        "AppleAPFSMediaBSDClient",
+        "AppleAPFSFusionDeviceBSDClient",
+        "AppleAPFSMediaUserClient",
+        "AppleAPFSContainerUserClient",
+        "AppleAPFSVolumeUserClient",
+        "AppleAPFSSnapshotUserClient",
+        "AppleAPFSKeybagUserClient",
+        "AppleAPFSEncryptedUserClient",
+        "AppleAPFSHealthDeviceUserClient",
+        "AppleAPFSTreeUserClient",
+        "AppleAPFSMaintenanceDeviceUserClient",
+        "AppleAPFSSpaceManagerUserClient",
+        "AppleAPFSEncryptedDeviceUserClient",
+        "AppleAPFSMediaUserClient",
+        "AppleAPFSFusionDeviceUserClient",
+        
+        // Generic I/O
+        "IOBlockStorageDevice",
+        "IOBlockStorageDriver",
+        "IOMedia",
+        "IOMediaBSDClient",
+        "IOPartitionScheme",
+        "IOStorage",
+        
+        // Memory/VM
+        "IOVMPage",
+        "IOVMPageUserClient",
+        "IOMemoryDescriptor",
+        "IOMemoryDescriptorUserClient",
+        
+        // Network
+        "IONetworkInterface",
+        "IONetworkController",
+        "IOEthernetInterface",
+        "IOEthernetController",
+        "IO80211Controller",
+        "IO80211Interface",
+        
+        // HID
+        "IOHIDDevice",
+        "IOHIDEventService",
+        "IOHIDUserClient",
+        
+        // Graphics
+        "IOGraphicsDevice",
+        "IOGraphicsAccelerator",
+        "IODisplayDevice",
+        
+        // USB
+        "IOUSBDevice",
+        "IOUSBHostDevice",
+        "IOUSBHostInterface",
+        
+        // Bluetooth
+        "IOBluetoothDevice",
+        "IOBluetoothHostController",
+        
+        // Audio
+        "IOAudioDevice",
+        "IOAudioEngine",
+        "IOAudioStream",
+        
+        // Power
+        "IOPowerDevice",
+        "IOPowerConnection",
+        
+        // System
+        "IOPlatformDevice",
+        "IOPlatformExpert",
+        "IOCPU",
+        "IOCPUThermal",
+        
+        // Security/ Crypto
+        "IOCryptoAccelerator",
+        "IOCryptoUserClient",
+        "IOAESAccelerator",
+        "IOAESHardwareAccelerator",
+        
+        // Misc
+        "IOSerialBSDClient",
+        "IOSerialStreamSync",
+        "IOTTYDevice",
+        "IOPPPDevice",
+        "IOWatchDogTimer",
+        "IOTimerEventSource",
+        "IOInterruptEventSource",
+        "IOCommandGate",
+        "IOWorkLoop",
+        "IOEventSource",
+        "IOService",
+        "IORegistryEntry",
+        "IONotifier",
+        "IOIterator",
+        "IOCatalogue",
+        "IOResources",
+        "IOUserClient",
+        "IOUserServer",
+        "IOKernelUserClient",
+        "IOKernelUserServer",
+        
+        // Add more as needed
+        NULL
+    };
+    
+    log_msg("%-50s | %-10s | %s\n", "SERVICE NAME", "STATUS", "NOTES");
+    log_msg("--------------------------------------------------------------------------------\n");
+    
+    for (int i = 0; services[i] != NULL; i++) {
+        g_total_count++;
+        int result = test_service(services[i]);
+        
+        if (result == 1) {
+            g_openable_count++;
+            log_msg("%-50s | [+] OPEN   | POTENTIAL CWE-862!\n", services[i]);
+        } else if (result == 0) {
+            g_blocked_count++;
+            log_msg("%-50s | [-] BLOCKED| Sandbox/MACF denied\n", services[i]);
+        } else if (result == -1) {
+            log_msg("%-50s | [?] NOTFOUND| Service not present\n", services[i]);
+        } else {
+            log_msg("%-50s | [?] ERROR  | Other error\n", services[i]);
+        }
+        
+        // Small delay to prevent watchdog
+        usleep(1000);
     }
+    
+    log_msg("\n=== Summary ===\n");
+    log_msg("Total tested: %d\n", g_total_count);
+    log_msg("Openable (CWE-862 candidates): %d\n", g_openable_count);
+    log_msg("Blocked by sandbox: %d\n", g_blocked_count);
+    log_msg("Not found: %d\n", g_total_count - g_openable_count - g_blocked_count);
+    
+    if (g_openable_count > 0) {
+        log_msg("\n!!! FOUND %d POTENTIAL CWE-862 TARGETS !!!\n", g_openable_count);
+        log_msg("Next step: fuzz selectors on openable services\n");
+    } else {
+        log_msg("\nNo openable services found. Need broader enumeration.\n");
+    }
+    
+    fclose(g_log);
+    return 0;
 }
