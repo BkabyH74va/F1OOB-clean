@@ -36,17 +36,13 @@
 - (void)fuzz {
     [self log:@"[1] Starting path traversal fuzz...\n"];
     
-    // Target files outside sandbox
     NSArray *targets = @[
         @"/etc/passwd",
         @"/etc/hosts",
         @"/private/etc/passwd",
         @"/System/Library/CoreServices/SystemVersion.plist",
-        @"/usr/lib/libSystem.dylib",
-        @"/var/mobile/Library/Preferences/com.apple.springboard.plist",
     ];
     
-    // Path traversal patterns
     NSArray *patterns = @[
         @"../../../../../../%@",
         @"..%%2f..%%2f..%%2f..%%2f..%%2f..%%2f%@",
@@ -54,14 +50,14 @@
         @"%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%@",
         @"%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%@",
         @"....//....//....//....//....//....//%@",
-        @"..\\..\\..\\..\\..\\..\\%@",
     ];
     
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *home = NSHomeDirectory();
     
     for (NSString *target in targets) {
-        [self log:[NSString stringWithFormat:@"[2] Testing target: %@", target]];
+        NSString *logLine = [@"[2] Testing: " stringByAppendingString:target];
+        [self log:logLine];
         
         for (NSString *pattern in patterns) {
             NSString *traversal = [NSString stringWithFormat:pattern, target];
@@ -70,29 +66,35 @@
             // Test 1: fileExistsAtPath
             BOOL exists = [fm fileExistsAtPath:fullPath];
             if (exists) {
-                [self log:[NSString stringWithFormat:@"  *** fileExistsAtPath SUCCESS: %@ ***", fullPath]];
+                NSString *msg = [@"  *** fileExistsAtPath: " stringByAppendingString:fullPath];
+                [self log:msg];
             }
             
             // Test 2: contentsAtPath
             NSData *data = [fm contentsAtPath:fullPath];
             if (data) {
-                [self log:[NSString stringWithFormat:@"  *** contentsAtPath SUCCESS: %@ (%lu bytes) ***", fullPath, (unsigned long)data.length]];
+                NSString *msg = [@"  *** contentsAtPath: " stringByAppendingString:fullPath];
+                msg = [msg stringByAppendingFormat:@" (%lu bytes)", (unsigned long)data.length];
+                [self log:msg];
             }
             
-            // Test 3: NSURL fileURLWithPath
+            // Test 3: NSURL
             NSURL *url = [NSURL fileURLWithPath:fullPath];
             NSData *urlData = [NSData dataWithContentsOfURL:url];
             if (urlData) {
-                [self log:[NSString stringWithFormat:@"  *** NSURL SUCCESS: %@ (%lu bytes) ***", fullPath, (unsigned long)urlData.length]];
+                NSString *msg = [@"  *** NSURL: " stringByAppendingString:fullPath];
+                msg = [msg stringByAppendingFormat:@" (%lu bytes)", (unsigned long)urlData.length];
+                [self log:msg];
             }
             
             // Test 4: stringByStandardizingPath
             NSString *resolved = [fullPath stringByStandardizingPath];
             if (![resolved hasPrefix:home]) {
-                [self log:[NSString stringWithFormat:@"  *** StandardizingPath ESCAPED: %@ -> %@ ***", fullPath, resolved]];
+                NSString *msg = [@"  *** ESCAPED: " stringByAppendingString:resolved];
+                [self log:msg];
             }
             
-            usleep(10000); // 10ms
+            usleep(10000);
         }
     }
     
