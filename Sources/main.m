@@ -7,7 +7,7 @@
 
 // MARK: - Dynamic IOSurface Loading
 
-typedef uint32_t (*IOSurfaceCreateFunc)(CFDictionaryRef properties);
+typedef void *(*IOSurfaceCreateFunc)(CFDictionaryRef properties);
 typedef void *(*IOSurfaceLockFunc)(uint32_t surface_id, uint32_t options, uint32_t *seed);
 typedef void *(*IOSurfaceUnlockFunc)(uint32_t surface_id, uint32_t options, uint32_t *seed);
 typedef void *(*IOSurfaceGetBaseAddressFunc)(uint32_t surface_id);
