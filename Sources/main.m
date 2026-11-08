@@ -1,10 +1,8 @@
 #import <UIKit/UIKit.h>
-#import <IOKit/IOKitLib.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UITextView *logView;
-@property (strong, nonatomic) NSMutableString *logBuffer;
 @end
 
 @implementation AppDelegate
@@ -16,15 +14,14 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.text = @"IOKit Enumerator Starting...\n";
+    self.logView.text = @"Path Traversal Fuzzer\n\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    // Delay IOKit work to let UI fully load
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self enumerate];
+        [self fuzz];
     });
     
     return YES;
@@ -36,86 +33,70 @@
     });
 }
 
-- (void)enumerate {
-    [self log:@"[1] Starting enumeration...\n"];
+- (void)fuzz {
+    [self log:@"[1] Starting path traversal fuzz...\n"];
     
-    int openable = 0, blocked = 0, notfound = 0, total = 0;
-    
-    NSArray *services = @[
-        @"AppleAPFSVolume",
-        @"AppleAPFSContainer",
-        @"AppleAPFSVolumeBSDClient",
-        @"AppleAPFSContainerBSDClient",
-        @"AppleAPFSManager",
-        @"AppleFileSystemDriver",
-        @"AppleNVMeSMARTUserClient",
-        @"IOHIDLibUserClient",
-        @"IOAESAcceleratorUserClient",
-        @"IOBlockStorageDevice",
-        @"IOMedia",
-        @"IOMediaBSDClient",
-        @"IOUSBDevice",
-        @"IOUSBHostDevice",
-        @"IOBluetoothDevice",
-        @"IOAudioDevice",
-        @"IOGraphicsDevice",
-        @"IONetworkInterface",
-        @"IONetworkController",
-        @"IOPlatformDevice",
-        @"IOPlatformExpert",
-        @"IOCPU",
-        @"IOPowerDevice",
-        @"IOService",
-        @"IORegistryEntry",
+    // Target files outside sandbox
+    NSArray *targets = @[
+        @"/etc/passwd",
+        @"/etc/hosts",
+        @"/private/etc/passwd",
+        @"/System/Library/CoreServices/SystemVersion.plist",
+        @"/usr/lib/libSystem.dylib",
+        @"/var/mobile/Library/Preferences/com.apple.springboard.plist",
     ];
     
-    for (NSString *name in services) {
-        total++;
+    // Path traversal patterns
+    NSArray *patterns = @[
+        @"../../../../../../%@",
+        @"..%%2f..%%2f..%%2f..%%2f..%%2f..%%2f%@",
+        @"..%2f..%2f..%2f..%2f..%2f..%2f%@",
+        @"%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/%@",
+        @"%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%@",
+        @"....//....//....//....//....//....//%@",
+        @"..\\..\\..\\..\\..\\..\\%@",
+    ];
+    
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *home = NSHomeDirectory();
+    
+    for (NSString *target in targets) {
+        [self log:[NSString stringWithFormat:@"[2] Testing target: %@", target]];
         
-        // Log on main thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"Testing %@...\n", name]];
-        });
-        
-        // Do IOKit work on background thread
-        io_service_t service = IOServiceGetMatchingService(0, IOServiceMatching([name UTF8String]));
-        if (!service) {
-            notfound++;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  %@ NOT FOUND\n", name]];
-            });
-            continue;
+        for (NSString *pattern in patterns) {
+            NSString *traversal = [NSString stringWithFormat:pattern, target];
+            NSString *fullPath = [home stringByAppendingPathComponent:traversal];
+            
+            // Test 1: fileExistsAtPath
+            BOOL exists = [fm fileExistsAtPath:fullPath];
+            if (exists) {
+                [self log:[NSString stringWithFormat:@"  *** fileExistsAtPath SUCCESS: %@ ***", fullPath]];
+            }
+            
+            // Test 2: contentsAtPath
+            NSData *data = [fm contentsAtPath:fullPath];
+            if (data) {
+                [self log:[NSString stringWithFormat:@"  *** contentsAtPath SUCCESS: %@ (%lu bytes) ***", fullPath, (unsigned long)data.length]];
+            }
+            
+            // Test 3: NSURL fileURLWithPath
+            NSURL *url = [NSURL fileURLWithPath:fullPath];
+            NSData *urlData = [NSData dataWithContentsOfURL:url];
+            if (urlData) {
+                [self log:[NSString stringWithFormat:@"  *** NSURL SUCCESS: %@ (%lu bytes) ***", fullPath, (unsigned long)urlData.length]];
+            }
+            
+            // Test 4: stringByStandardizingPath
+            NSString *resolved = [fullPath stringByStandardizingPath];
+            if (![resolved hasPrefix:home]) {
+                [self log:[NSString stringWithFormat:@"  *** StandardizingPath ESCAPED: %@ -> %@ ***", fullPath, resolved]];
+            }
+            
+            usleep(10000); // 10ms
         }
-        
-        io_connect_t conn;
-        kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
-        
-        if (kr == KERN_SUCCESS) {
-            openable++;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  *** %@ OPENED! ***\n", name]];
-            });
-            IOServiceClose(conn);
-        } else if (kr == kIOReturnNotPermitted) {
-            blocked++;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  %@ BLOCKED\n", name]];
-            });
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"  %@ error: 0x%x\n", name, kr]];
-            });
-        }
-        
-        IOObjectRelease(service);
-        
-        // Critical: yield to prevent watchdog
-        usleep(50000); // 50ms
     }
     
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"\n=== DONE: %d total, %d open, %d blocked, %d not found ===\n", total, openable, blocked, notfound]];
-    });
+    [self log:@"\n[3] Fuzz complete"];
 }
 
 @end
