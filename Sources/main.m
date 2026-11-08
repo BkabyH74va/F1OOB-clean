@@ -1,21 +1,12 @@
-#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <xpc/xpc.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UITextView *logView;
-- (void)log:(NSString *)msg;
 @end
 
 @implementation AppDelegate
-
-- (void)log:(NSString *)msg {
-    NSString *line = [NSString stringWithFormat:@"%@\n", msg];
-    NSLog(@"%@", line);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.logView.text = [self.logView.text stringByAppendingString:line];
-    });
-}
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
@@ -24,80 +15,71 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    self.logView.backgroundColor = [UIColor blackColor];
-    self.logView.textColor = [UIColor greenColor];
+    self.logView.text = @"XPC Fuzzer\n\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== XPC Service Fuzzer ==="];
-    [self log:@"Target: APFS-related XPC services"];
-    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self fuzzXPCServices];
+        [self fuzz];
     });
     
     return YES;
 }
 
-- (void)fuzzXPCServices {
-    [self log:@"\n[1] Searching for APFS XPC services..."];
-    
-    // Known APFS-related XPC services
+- (void)fuzz {
     NSArray *services = @[
         @"com.apple.apfs.kext.xpc",
         @"com.apple.filesystems.apfs",
         @"com.apple.diskmanagementd",
         @"com.apple.storagekitd",
-        @"com.apple.corestorage",
-        @"com.apple.filesystems.hfs.kext",
     ];
     
-    for (NSString *serviceName in services) {
-        [self log:[NSString stringWithFormat:@"[2] Trying %@...", serviceName]];
+    for (NSString *name in services) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"Trying %@...\n", name]];
+        });
         
-        NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:serviceName options:0];
+        // Use low-level XPC API — available on iOS
+        xpc_connection_t conn = xpc_connection_create_mach_service([name UTF8String], NULL, 0);
         
-        // Set up interface
-        connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(NSObject)];
-        
-        // Set up error handler
-        connection.invalidationHandler = ^{
-            [self log:[NSString stringWithFormat:@"[3] %@ connection invalidated", serviceName]];
-        };
-        
-        connection.interruptionHandler = ^{
-            [self log:[NSString stringWithFormat:@"[3] %@ connection interrupted", serviceName]];
-        };
-        
-        [connection resume];
-        
-        // Try to send messages
-        id remoteObject = [connection remoteObjectProxyWithErrorHandler:^(NSError *error) {
-            [self log:[NSString stringWithFormat:@"[4] %@ error: %@", serviceName, error.localizedDescription]];
-        }];
-        
-        // Send various selectors
-        for (int i = 0; i < 20; i++) {
-            SEL selector = NSSelectorFromString([NSString stringWithFormat:@"method%d", i]);
-            if ([remoteObject respondsToSelector:selector]) {
-                [self log:[NSString stringWithFormat:@"[5] %@ responds to %@!", serviceName, NSStringFromSelector(selector)]];
-            }
+        if (conn) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"%@ connected!\n", name]];
+            });
+            
+            // Set event handler
+            xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+                xpc_type_t type = xpc_get_type(event);
+                if (type == XPC_TYPE_ERROR) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"%@ error: %s\n", name, xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION)]];
+                    });
+                }
+            });
+            
+            xpc_connection_resume(conn);
+            
+            // Send a test message
+            xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
+            xpc_dictionary_set_string(msg, "command", "test");
+            xpc_connection_send_message(conn, msg);
+            
+            [NSThread sleepForTimeInterval:0.5];
+            xpc_release(msg);
+            xpc_connection_cancel(conn);
+            xpc_release(conn);
+        } else {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"%@ failed\n", name]];
+            });
         }
-        
-        // Try generic method
-        @try {
-            [remoteObject performSelector:@selector(description)];
-        } @catch (NSException *exception) {
-            [self log:[NSString stringWithFormat:@"[6] %@ exception: %@", serviceName, exception.reason]];
-        }
-        
-        [connection invalidate];
     }
     
-    [self log:@"\n=== Fuzz Complete ==="];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.logView.text = [self.logView.text stringByAppendingString:@"Done\n"];
+    });
 }
 
 @end
