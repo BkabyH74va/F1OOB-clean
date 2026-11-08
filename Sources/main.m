@@ -7,7 +7,7 @@
 
 // MARK: - Dynamic IOSurface Loading
 
-typedef void *(*IOSurfaceCreateFunc)(CFDictionaryRef properties);
+typedef void *(*IOSurfaceCreateFunc)(void *properties);
 typedef void *(*IOSurfaceLockFunc)(uint32_t surface_id, uint32_t options, uint32_t *seed);
 typedef void *(*IOSurfaceUnlockFunc)(uint32_t surface_id, uint32_t options, uint32_t *seed);
 typedef void *(*IOSurfaceGetBaseAddressFunc)(uint32_t surface_id);
@@ -182,7 +182,7 @@ static int test_cross_object_write(void) {
     uint64_t f1_gpu_va = agx_map_surface(surface_id, &span, &agx_conn);
     if (!f1_gpu_va) return -1;
     
-    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
     if (!dev) {
         NSLog(@"[ERROR] No Metal device");
         return -1;
