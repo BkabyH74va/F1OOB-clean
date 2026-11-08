@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <IOKit/IOKitLib.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -14,14 +15,14 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.text = @"Kernel Reconnaissance\n\n";
+    self.logView.text = @"IOKit Property Enumerator\n\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self recon];
+        [self enumerate];
     });
     
     return YES;
@@ -33,109 +34,100 @@
     });
 }
 
-- (NSString *)traverse:(NSString *)path {
-    NSString *home = NSHomeDirectory();
-    NSString *traversal = [@"../../../../../../" stringByAppendingString:path];
-    return [home stringByAppendingPathComponent:traversal];
-}
-
-- (void)recon {
-    [self log:@"[1] Gathering kernel exploit intelligence...\n"];
+- (void)enumerate {
+    [self log:@"[1] Enumerating IOKit registry...\n"];
     
-    NSFileManager *fm = [NSFileManager defaultManager];
-    
-    // 1. Find dyld shared cache (ROP gadgets)
-    NSArray *dyldPaths = @[
-        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
-        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
-        @"/private/var/db/dyld/dyld_shared_cache_arm64e",
-    ];
-    
-    [self log:@"[2] Looking for dyld shared cache..."];
-    for (NSString *path in dyldPaths) {
-        NSString *fullPath = [self traverse:path];
-        NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
-        if (attrs) {
-            NSString *msg = [NSString stringWithFormat:@"*** FOUND: %@ (%llu bytes)", path, [attrs fileSize]];
-            [self log:msg];
-        }
-        usleep(50000);
+    // Get all services
+    io_iterator_t iterator;
+    kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOService"), &iterator);
+    if (kr != KERN_SUCCESS) {
+        [self log:@"Failed to get services"];
+        return;
     }
     
-    // 2. Find launchd overrides (disabled services)
-    [self log:@"\n[3] Reading launchd overrides..."];
-    NSString *overridesPath = [self traverse:@"/private/var/db/launchd.db/com.apple.launchd/overrides.plist"];
-    NSData *overridesData = [fm contentsAtPath:overridesPath];
-    if (overridesData) {
-        NSDictionary *overrides = [NSPropertyListSerialization propertyListWithData:overridesData options:0 format:nil error:nil];
-        if (overrides) {
-            for (NSString *key in overrides) {
-                NSString *msg = [NSString stringWithFormat:@"  Service: %@ = %@", key, overrides[key]];
-                [self log:msg];
-            }
-        }
-    } else {
-        [self log:@"  overrides.plist not accessible"];
-    }
+    int count = 0;
+    int interesting = 0;
+    io_service_t service;
     
-    // 3. Find kernel extensions
-    [self log:@"\n[4] Enumerating kernel extensions..."];
-    NSString *kextPath = [self traverse:@"/System/Library/Extensions"];
-    NSArray *kexts = [fm contentsOfDirectoryAtPath:kextPath error:nil];
-    if (kexts) {
-        for (NSString *kext in kexts) {
-            if ([kext hasSuffix:@".kext"]) {
-                NSString *msg = [NSString stringWithFormat:@"  KEXT: %@", kext];
-                [self log:msg];
-            }
-        }
-    } else {
-        [self log:@"  Extensions directory not accessible"];
-    }
-    
-    // 4. Find vulnerable drivers (IOKit families)
-    [self log:@"\n[5] Checking IOKit personalities..."];
-    NSString *iokitPath = [self traverse:@"/System/Library/Extensions/IOKit.kext/Contents/PlugIns"];
-    NSArray *iokitPlugins = [fm contentsOfDirectoryAtPath:iokitPath error:nil];
-    if (iokitPlugins) {
-        for (NSString *plugin in iokitPlugins) {
-            NSString *msg = [NSString stringWithFormat:@"  IOKit: %@", plugin];
-            [self log:msg];
-        }
-    }
-    
-    // 5. Read system version
-    [self log:@"\n[6] System info..."];
-    NSString *versionPath = [self traverse:@"/System/Library/CoreServices/SystemVersion.plist"];
-    NSData *versionData = [fm contentsAtPath:versionPath];
-    if (versionData) {
-        NSDictionary *version = [NSPropertyListSerialization propertyListWithData:versionData options:0 format:nil error:nil];
-        if (version) {
-            NSString *msg = [NSString stringWithFormat:@"  Product: %@ %@ (%@)", 
-                version[@"ProductName"], version[@"ProductVersion"], version[@"ProductBuildVersion"]];
-            [self log:msg];
-        }
-    }
-    
-    // 6. Find setuid binaries in /usr/libexec
-    [self log:@"\n[7] Scanning /usr/libexec for setuid binaries..."];
-    NSString *libexecPath = [self traverse:@"/usr/libexec"];
-    NSArray *libexecContents = [fm contentsOfDirectoryAtPath:libexecPath error:nil];
-    if (libexecContents) {
-        for (NSString *item in libexecContents) {
-            NSString *fullPath = [libexecPath stringByAppendingPathComponent:item];
-            NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
-            if (attrs) {
-                NSNumber *perms = attrs[NSFilePosixPermissions];
-                if (perms && ([perms intValue] & 04000)) { // S_ISUID
-                    NSString *msg = [NSString stringWithFormat:@"*** SETUID: %@ (perms: %o)", item, [perms intValue]];
-                    [self log:msg];
+    while ((service = IOIteratorNext(iterator)) && count < 500) {
+        count++;
+        
+        // Get service name
+        io_name_t name;
+        if (IORegistryEntryGetName(service, name) == KERN_SUCCESS) {
+            NSString *serviceName = [NSString stringWithUTF8String:name];
+            
+            // Get properties
+            CFMutableDictionaryRef properties = NULL;
+            kr = IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, kNilOptions);
+            if (kr == KERN_SUCCESS && properties) {
+                NSDictionary *props = (__bridge NSDictionary *)properties;
+                
+                // Look for interesting properties
+                BOOL isInteresting = NO;
+                NSString *reason = @"";
+                
+                // Check for user client class
+                NSString *userClient = props[@"IOUserClientClass"];
+                if (userClient) {
+                    isInteresting = YES;
+                    reason = [reason stringByAppendingString:@"[UserClient] "];
                 }
+                
+                // Check for entitlement requirements
+                NSString *entitlements = props[@"IOUserClientEntitlements"];
+                if (entitlements) {
+                    isInteresting = YES;
+                    reason = [reason stringByAppendingString:@"[Entitlements] "];
+                }
+                
+                // Check for privileged access
+                NSNumber *privileged = props[@"IOPrivileged"];
+                if (privileged && [privileged boolValue]) {
+                    isInteresting = YES;
+                    reason = [reason stringByAppendingString:@"[Privileged] "];
+                }
+                
+                // Check for dangerous keys
+                if (props[@"IOKitDebug"]) {
+                    isInteresting = YES;
+                    reason = [reason stringByAppendingString:@"[Debug] "];
+                }
+                
+                if (isInteresting) {
+                    interesting++;
+                    NSString *msg = [NSString stringWithFormat:@"*** %@: %@ (%lu props)", serviceName, reason, (unsigned long)props.count];
+                    [self log:msg];
+                    
+                    // Log all properties for interesting services
+                    for (NSString *key in props) {
+                        NSString *propMsg = [NSString stringWithFormat:@"    %@ = %@", key, props[key]];
+                        [self log:propMsg];
+                    }
+                }
+                
+                CFRelease(properties);
             }
+        }
+        
+        IOObjectRelease(service);
+        
+        // Yield to prevent watchdog
+        if (count % 50 == 0) {
+            usleep(10000);
+            NSString *progress = [NSString stringWithFormat:@"... scanned %d services, %d interesting", count, interesting];
+            [self log:progress];
         }
     }
     
-    [self log:@"\n[8] Recon complete"];
+    IOObjectRelease(iterator);
+    
+    NSString *summary = [NSString stringWithFormat:@"\n[2] Complete: %d services scanned, %d interesting found", count, interesting];
+    [self log:summary];
+    
+    if (interesting == 0) {
+        [self log:@"\nNo interesting services found. iOS 27.0.1 has locked down IOKit."];
+    }
 }
 
 @end
