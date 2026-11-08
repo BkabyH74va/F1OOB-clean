@@ -1,14 +1,5 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <IOKit/IOKitLib.h>
-#import <mach/mach.h>
-#import <sys/utsname.h>
-#import <sys/stat.h>
-#import <sys/ioctl.h>
-#import <fcntl.h>
-#import <unistd.h>
-#import <errno.h>
-#import <string.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -23,8 +14,6 @@
     NSLog(@"%@", line);
     dispatch_async(dispatch_get_main_queue(), ^{
         self.logView.text = [self.logView.text stringByAppendingString:line];
-        NSRange range = NSMakeRange(self.logView.text.length - 1, 1);
-        [self.logView scrollRangeToVisible:range];
     });
 }
 
@@ -43,108 +32,72 @@
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== CVE-2026-43689 Trigger v2 ==="];
-    [self log:@"Target: AppleAPFSVolumeBSDClient via device nodes"];
-    
-    struct utsname uts;
-    uname(&uts);
-    [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
+    [self log:@"=== XPC Service Fuzzer ==="];
+    [self log:@"Target: APFS-related XPC services"];
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [self triggerViaDeviceNodes];
+        [self fuzzXPCServices];
     });
     
     return YES;
 }
 
-- (void)triggerViaDeviceNodes {
-    [self log:@"\n[1] Probing APFS device nodes..."];
+- (void)fuzzXPCServices {
+    [self log:@"\n[1] Searching for APFS XPC services..."];
     
-    // Try to access APFS volume device nodes
-    const char *devices[] = {
-        "/dev/disk0s1",
-        "/dev/disk0s2",
-        "/dev/disk1s1",
-        "/dev/disk1s2",
-        "/dev/disk2s1",
-        "/dev/disk2s2",
-        "/dev/disk3s1",
-        "/dev/disk3s2",
-        NULL
-    };
+    // Known APFS-related XPC services
+    NSArray *services = @[
+        @"com.apple.apfs.kext.xpc",
+        @"com.apple.filesystems.apfs",
+        @"com.apple.diskmanagementd",
+        @"com.apple.storagekitd",
+        @"com.apple.corestorage",
+        @"com.apple.filesystems.hfs.kext",
+    ];
     
-    for (int i = 0; devices[i]; i++) {
-        [self log:[NSString stringWithFormat:@"[2] Trying %s...", devices[i]]];
+    for (NSString *serviceName in services) {
+        [self log:[NSString stringWithFormat:@"[2] Trying %@...", serviceName]];
         
-        int fd = open(devices[i], O_RDWR);
-        if (fd >= 0) {
-            [self log:[NSString stringWithFormat:@"[3] OPENED %s (fd=%d)", devices[i], fd]];
-            
-            // Try to trigger ioctl calls that might hit AppleAPFSVolumeBSDClient
-            for (unsigned long cmd = 0; cmd < 100; cmd++) {
-                char buf[4096] = {0};
-                int result = ioctl(fd, cmd, buf);
-                if (result != -1) {
-                    [self log:[NSString stringWithFormat:@"[4] ioctl %lu: SUCCESS (result=%d)", cmd, result]];
-                }
+        NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:serviceName options:0];
+        
+        // Set up interface
+        connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(NSObject)];
+        
+        // Set up error handler
+        connection.invalidationHandler = ^{
+            [self log:[NSString stringWithFormat:@"[3] %@ connection invalidated", serviceName]];
+        };
+        
+        connection.interruptionHandler = ^{
+            [self log:[NSString stringWithFormat:@"[3] %@ connection interrupted", serviceName]];
+        };
+        
+        [connection resume];
+        
+        // Try to send messages
+        id remoteObject = [connection remoteObjectProxyWithErrorHandler:^(NSError *error) {
+            [self log:[NSString stringWithFormat:@"[4] %@ error: %@", serviceName, error.localizedDescription]];
+        }];
+        
+        // Send various selectors
+        for (int i = 0; i < 20; i++) {
+            SEL selector = NSSelectorFromString([NSString stringWithFormat:@"method%d", i]);
+            if ([remoteObject respondsToSelector:selector]) {
+                [self log:[NSString stringWithFormat:@"[5] %@ responds to %@!", serviceName, NSStringFromSelector(selector)]];
             }
-            
-            close(fd);
-        } else {
-            [self log:[NSString stringWithFormat:@"[3] Failed to open %s: %s", devices[i], strerror(errno)]];
         }
+        
+        // Try generic method
+        @try {
+            [remoteObject performSelector:@selector(description)];
+        } @catch (NSException *exception) {
+            [self log:[NSString stringWithFormat:@"[6] %@ exception: %@", serviceName, exception.reason]];
+        }
+        
+        [connection invalidate];
     }
     
-    // Also try via IOKit registry
-    [self log:@"\n[5] Probing IOKit registry for APFS..."];
-    
-    io_iterator_t iterator;
-    kern_return_t kr = IOServiceGetMatchingServices(0, IOServiceMatching("IOMedia"), &iterator);
-    if (kr == KERN_SUCCESS) {
-        io_service_t service;
-        int count = 0;
-        while ((service = IOIteratorNext(iterator)) != 0) {
-            count++;
-            
-            CFMutableDictionaryRef props;
-            if (IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS) {
-                NSDictionary *dict = (__bridge NSDictionary *)props;
-                NSString *bsdName = dict[@"BSD Name"];
-                NSString *content = dict[@"Content"];
-                
-                if (bsdName && [content containsString:@"Apple_APFS"]) {
-                    [self log:[NSString stringWithFormat:@"[6] Found APFS media: %@ (%@)", bsdName, content]];
-                    
-                    io_connect_t conn;
-                    kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
-                    if (kr == KERN_SUCCESS) {
-                        [self log:[NSString stringWithFormat:@"[7] Opened %@: 0x%x", bsdName, conn]];
-                        
-                        for (int sel = 0; sel < 50; sel++) {
-                            uint64_t input[10] = {0};
-                            uint64_t output[10] = {0};
-                            uint32_t outputCnt = 10;
-                            
-                            kr = IOConnectCallMethod(conn, sel, input, 10, NULL, 0, output, &outputCnt, NULL, NULL);
-                            if (kr != KERN_SUCCESS && kr != 0xe00002c2) {
-                                [self log:[NSString stringWithFormat:@"[8] %@ selector %d: 0x%x", bsdName, sel, kr]];
-                            }
-                        }
-                        
-                        IOServiceClose(conn);
-                    }
-                }
-                
-                CFRelease(props);
-            }
-            
-            IOObjectRelease(service);
-            if (count > 20) break;
-        }
-        IOObjectRelease(iterator);
-    }
-    
-    [self log:@"\n=== Trigger Complete ==="];
+    [self log:@"\n=== Fuzz Complete ==="];
 }
 
 @end
