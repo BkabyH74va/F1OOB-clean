@@ -30,7 +30,7 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.font = [UIFont monospaceSystemFontOfSize:12];
+    self.logView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
