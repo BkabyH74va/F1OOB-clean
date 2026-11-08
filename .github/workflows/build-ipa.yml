@@ -31,7 +31,8 @@ jobs:
             objectVersion = 56;
             objects = {
               A00000000000000000000001 = {isa = PBXBuildFile; fileRef = A00000000000000000000002; };
-              A00000000000000000000003 = {isa = PBXBuildFile; fileRef = A00000000000000000000004; };\n              A00000000000000000000023 = {isa = PBXBuildFile; fileRef = A00000000000000000000005; };
+              A00000000000000000000003 = {isa = PBXBuildFile; fileRef = A00000000000000000000004; };
+              A00000000000000000000023 = {isa = PBXBuildFile; fileRef = A00000000000000000000005; };
               A00000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
               A00000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
               A00000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
