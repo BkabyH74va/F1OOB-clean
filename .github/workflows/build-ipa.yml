@@ -154,19 +154,11 @@ jobs:
           				COPY_PHASE_STRIP = NO;
           				DEBUG_INFORMATION_FORMAT = dwarf;
           				ENABLE_TESTABILITY = YES;
-          				FRAMEWORK_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks",
-          				);
           				GCC_DYNAMIC_NO_PIC = NO;
           				GCC_OPTIMIZATION_LEVEL = 0;
           				GCC_PREPROCESSOR_DEFINITIONS = (
           					"DEBUG=1",
           					"$(inherited)",
-          				);
-          				HEADER_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks/IOSurface.framework/Headers",
           				);
           				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
           				ONLY_ACTIVE_ARCH = YES;
@@ -183,14 +175,6 @@ jobs:
           				COPY_PHASE_STRIP = NO;
           				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
           				ENABLE_NS_ASSERTIONS = NO;
-          				FRAMEWORK_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks",
-          				);
-          				HEADER_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks/IOSurface.framework/Headers",
-          				);
           				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
           				SDKROOT = iphoneos;
           				VALIDATE_PRODUCT = YES;
@@ -203,15 +187,7 @@ jobs:
           				CODE_SIGN_STYLE = Automatic;
           				CURRENT_PROJECT_VERSION = 1;
           				DEVELOPMENT_TEAM = "";
-          				FRAMEWORK_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks",
-          				);
           				GENERATE_INFOPLIST_FILE = NO;
-          				HEADER_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks/IOSurface.framework/Headers",
-          				);
           				INFOPLIST_FILE = Sources/Info.plist;
           				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
           				LD_RUNPATH_SEARCH_PATHS = (
@@ -231,15 +207,7 @@ jobs:
           				CODE_SIGN_STYLE = Automatic;
           				CURRENT_PROJECT_VERSION = 1;
           				DEVELOPMENT_TEAM = "";
-          				FRAMEWORK_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks",
-          				);
           				GENERATE_INFOPLIST_FILE = NO;
-          				HEADER_SEARCH_PATHS = (
-          					"$(inherited)",
-          					"$(SDKROOT)/System/Library/PrivateFrameworks/IOSurface.framework/Headers",
-          				);
           				INFOPLIST_FILE = Sources/Info.plist;
           				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
           				LD_RUNPATH_SEARCH_PATHS = (
