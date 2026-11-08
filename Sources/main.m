@@ -52,7 +52,7 @@
 - (void)runMetalTest {
     // Step 1: Get Metal device
     [self log:@"[1] Getting Metal device..."];
-    id<MTLDevice> dev = ltc1qalrd99hju33uagsf8927k7xfxr423gr93gnjz8();
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
     if (!dev) {
         [self log:@"FAIL: No Metal device"];
         return;
