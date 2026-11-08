@@ -1,5 +1,5 @@
 #import <UIKit/UIKit.h>
-#import <xpc/xpc.h>
+#import <IOKit/IOKitLib.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -15,7 +15,7 @@
     UIViewController *vc = [[UIViewController alloc] init];
     self.logView = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.logView.editable = NO;
-    self.logView.text = @"XPC Fuzzer\n\n";
+    self.logView.text = @"IOKit APFS Fuzzer\n\n";
     vc.view = self.logView;
     
     self.window.rootViewController = vc;
@@ -28,58 +28,71 @@
     return YES;
 }
 
+- (void)log:(NSString *)msg {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.logView.text = [self.logView.text stringByAppendingString:[msg stringByAppendingString:@"\n"]];
+    });
+}
+
 - (void)fuzz {
-    NSArray *services = @[
-        @"com.apple.apfs.kext.xpc",
-        @"com.apple.filesystems.apfs",
-        @"com.apple.diskmanagementd",
-        @"com.apple.storagekitd",
-    ];
+    [self log:@"[1] Searching for APFS services..."];
     
-    for (NSString *name in services) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"Trying %@...\n", name]];
-        });
-        
-        // Use low-level XPC API — available on iOS
-        xpc_connection_t conn = xpc_connection_create_mach_service([name UTF8String], NULL, 0);
-        
-        if (conn) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"%@ connected!\n", name]];
-            });
-            
-            // Set event handler
-            xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-                xpc_type_t type = xpc_get_type(event);
-                if (type == XPC_TYPE_ERROR) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"%@ error: %s\n", name, xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION)]];
-                    });
-                }
-            });
-            
-            xpc_connection_resume(conn);
-            
-            // Send a test message
-            xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
-            xpc_dictionary_set_string(msg, "command", "test");
-            xpc_connection_send_message(conn, msg);
-            
-            [NSThread sleepForTimeInterval:0.5];
-            xpc_release(msg);
-            xpc_connection_cancel(conn);
-            xpc_release(conn);
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.logView.text = [self.logView.text stringByAppendingString:[NSString stringWithFormat:@"%@ failed\n", name]];
-            });
-        }
+    // Search for any service with "APFS" in the name
+    io_iterator_t iterator;
+    kern_return_t kr = IOServiceGetMatchingServices(0, IOServiceNameMatching("AppleAPFS"), &iterator);
+    
+    if (kr != KERN_SUCCESS) {
+        [self log:@"No AppleAPFS services found"];
+        // Try broader search
+        kr = IOServiceGetMatchingServices(0, IOServiceMatching("IOService"), &iterator);
     }
     
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.logView.text = [self.logView.text stringByAppendingString:@"Done\n"];
-    });
+    io_service_t service;
+    int count = 0;
+    while ((service = IOIteratorNext(iterator)) != 0) {
+        count++;
+        
+        // Get service name
+        io_name_t name;
+        IORegistryEntryGetName(service, name);
+        
+        // Check if APFS-related
+        NSString *nameStr = [NSString stringWithUTF8String:name];
+        if ([nameStr containsString:@"APFS"] || [nameStr containsString:@"apfs"] || 
+            [nameStr containsString:@"Volume"] || [nameStr containsString:@"Disk"]) {
+            
+            [self log:[NSString stringWithFormat:@"[2] Found: %@ (0x%x)", nameStr, service]];
+            
+            // Try to open
+            io_connect_t conn;
+            kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+            if (kr == KERN_SUCCESS) {
+                [self log:[NSString stringWithFormat:@"[3] Opened %@: 0x%x", nameStr, conn]];
+                
+                // Fuzz selectors
+                for (int sel = 0; sel < 100; sel++) {
+                    uint64_t input[10] = {0};
+                    uint64_t output[10] = {0};
+                    uint32_t outputCnt = 10;
+                    
+                    kr = IOConnectCallMethod(conn, sel, input, 10, NULL, 0, output, &outputCnt, NULL, NULL);
+                    if (kr != KERN_SUCCESS && kr != 0xe00002c2) {
+                        [self log:[NSString stringWithFormat:@"[4] %@ selector %d: 0x%x", nameStr, sel, kr]];
+                    }
+                }
+                
+                IOServiceClose(conn);
+            } else {
+                [self log:[NSString stringWithFormat:@"[3] Failed to open %@: 0x%x", nameStr, kr]];
+            }
+        }
+        
+        IOObjectRelease(service);
+        if (count > 100) break;
+    }
+    
+    IOObjectRelease(iterator);
+    [self log:@"[5] Done"];
 }
 
 @end
