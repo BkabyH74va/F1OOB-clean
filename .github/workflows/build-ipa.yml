@@ -24,21 +24,14 @@ jobs:
         echo "=== All files ==="
         find . -type f -not -path './.git/*' | head -50
     
-    - name: Create Xcode project
+    - name: Create Xcode project directory
       run: |
-        # Check if project already exists
-        if [ -d "F1OOB.xcodeproj" ]; then
-          echo "Xcode project already exists"
-          exit 0
-        fi
-        
-        echo "Creating minimal Xcode project..."
-        
-        # Create project directory
         mkdir -p F1OOB.xcodeproj
-        
-        # Create project.pbxproj
-        cat > F1OOB.xcodeproj/project.pbxproj << 'ENDOFFILE'
+        echo "Created F1OOB.xcodeproj directory"
+    
+    - name: Create project.pbxproj
+      run: |
+        cat > F1OOB.xcodeproj/project.pbxproj << 'EOF'
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
@@ -257,10 +250,8 @@ jobs:
 	};
 	rootObject = AA0000000000000000000013 /* Project object */;
 }
-ENDOFFILE
-        
-        echo "Created F1OOB.xcodeproj/project.pbxproj"
-        ls -la F1OOB.xcodeproj/
+EOF
+        echo "Created project.pbxproj"
     
     - name: Build for iOS
       run: |
