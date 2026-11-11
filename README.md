@@ -1,19 +1,38 @@
-# F1OOB iPad A16
+# F1OOB - iOS 27.0.1 Sandbox Escape
 
-IOSurface F1 wrap -> GPU cross-object OOB write for iPad A16 (no MTE)
-
-## Structure
-
-- `Sources/main.m` — exploit code with runtime IOSurface loading
-- `Sources/Info.plist` — app config for iPad
-- `.github/workflows/build-ipa.yml` — build script with IOKit framework
-
-## Build
-
-Push to trigger GitHub Actions build.
+KAMUI-based sandbox escape for iOS 27.0.1 using containermanagerd symlink vulnerability.
 
 ## Target
-
 - Device: iPad A16 (iPad15,8)
 - iOS: 27.0.1 (24A446)
-- GPU: AGXAcceleratorG16P
+- PAC: Enabled
+- MTE: Disabled
+
+## Vulnerability
+CVE-2026-XXXX: containermanagerd symlink validation bypass
+
+## Escape Strategies
+1. Class 13 + partDomain traversal (bad_query successor)
+2. Class 7 part-directory symlink
+3. Class 13 direct MobileGestalt query
+4. Class 12 geod + traversal
+
+## Access Granted
+- /var/containers/Data/System
+- /var/mobile/Containers/Data/InternalDaemon
+- /var/mobile/Library/MobileGestalt (read/write)
+- All MCM containers (apps, groups, plugins)
+
+## NOT Included
+- Kernel R/W
+- Root privileges
+- PAC bypass
+
+## Build
+1. Add App Group: group.com.jasonquiles.F1OOB
+2. Set Code Signing Entitlements to F1OOB.entitlements
+3. Build and run on iOS 27.0.1 device
+
+## Credits
+- KAMUI: https://github.com/murk-sus/kamui-escape
+- worse_query: https://github.com/forcequitOS/worse_query
