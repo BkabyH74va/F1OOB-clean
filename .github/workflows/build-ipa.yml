@@ -15,22 +15,54 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Show available Xcode versions
+    - name: Find Xcode project
       run: |
-        ls /Applications/ | grep Xcode
-        xcode-select -p
-        xcodebuild -version
+        echo "=== Repository structure ==="
+        ls -la
+        
+        echo ""
+        echo "=== Searching for .xcodeproj files ==="
+        find . -name "*.xcodeproj" -type d 2>/dev/null
+        
+        echo ""
+        echo "=== Searching for .xcworkspace files ==="
+        find . -name "*.xcworkspace" -type d 2>/dev/null
+        
+        echo ""
+        echo "=== Searching for Package.swift ==="
+        find . -name "Package.swift" -type f 2>/dev/null
     
-    - name: Install dependencies
+    - name: Detect project type and build
       run: |
-        brew update
-        brew install ldid dpkg || true
-    
-    - name: Build for iOS (Unsigned)
-      run: |
+        # Find Xcode project
+        XCODEPROJ=$(find . -name "*.xcodeproj" -type d | head -1)
+        WORKSPACE=$(find . -name "*.xcworkspace" -type d | head -1)
+        PACKAGE=$(find . -name "Package.swift" -type f | head -1)
+        
+        if [ ! -z "$WORKSPACE" ]; then
+          echo "Found workspace: $WORKSPACE"
+          PROJECT_ARG="-workspace $WORKSPACE"
+        elif [ ! -z "$XCODEPROJ" ]; then
+          echo "Found project: $XCODEPROJ"
+          PROJECT_ARG="-project $XCODEPROJ"
+        elif [ ! -z "$PACKAGE" ]; then
+          echo "Found Swift Package: $PACKAGE"
+          echo "Swift Package Manager projects not supported in this workflow"
+          exit 1
+        else
+          echo "Error: No Xcode project, workspace, or Swift Package found"
+          echo "Please ensure your project file is committed to the repository"
+          exit 1
+        fi
+        
+        # Find scheme (usually matches project name)
+        SCHEME=$(basename "$XCODEPROJ" .xcodeproj 2>/dev/null || basename "$WORKSPACE" .xcworkspace 2>/dev/null || echo "F1OOB")
+        echo "Using scheme: $SCHEME"
+        
+        # Build
         xcodebuild \
-          -project F1OOB.xcodeproj \
-          -scheme F1OOB \
+          $PROJECT_ARG \
+          -scheme "$SCHEME" \
           -configuration Release \
           -destination 'generic/platform=iOS' \
           -derivedDataPath DerivedData \
@@ -42,18 +74,17 @@ jobs:
     
     - name: Find and verify app
       run: |
-        APP_PATH=$(find DerivedData -name "F1OOB.app" -type d | head -1)
+        APP_PATH=$(find DerivedData -name "*.app" -type d | head -1)
         if [ -z "$APP_PATH" ]; then
-          echo "Error: F1OOB.app not found"
+          echo "Error: No .app bundle found"
           exit 1
         fi
         echo "Found app at: $APP_PATH"
         ls -la "$APP_PATH"
+        echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
     
     - name: Create IPA
       run: |
-        APP_PATH=$(find DerivedData -name "F1OOB.app" -type d | head -1)
-        
         # Create Payload directory
         mkdir -p Payload
         cp -r "$APP_PATH" Payload/
