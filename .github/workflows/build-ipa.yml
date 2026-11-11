@@ -25,14 +25,13 @@ jobs:
         find . -type f -not -path './.git/*' | head -50
     
     - name: Create Xcode project directory
-      run: |
-        mkdir -p F1OOB.xcodeproj
-        echo "Created F1OOB.xcodeproj directory"
+      run: mkdir -p F1OOB.xcodeproj
     
-    - name: Create project.pbxproj
+    - name: Download project.pbxproj
       run: |
-        cat > F1OOB.xcodeproj/project.pbxproj << 'EOF'
-// !$*UTF8*$!
+        # Create a minimal project.pbxproj using Python (no heredoc)
+        python3 << 'PYEOF'
+project_content = '''// !$*UTF8*$!
 {
 	archiveVersion = 1;
 	classes = {
@@ -250,8 +249,11 @@ jobs:
 	};
 	rootObject = AA0000000000000000000013 /* Project object */;
 }
-EOF
-        echo "Created project.pbxproj"
+'''
+        with open('F1OOB.xcodeproj/project.pbxproj', 'w') as f:
+            f.write(project_content)
+        print("Created project.pbxproj")
+        PYEOF
     
     - name: Build for iOS
       run: |
