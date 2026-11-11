@@ -24,14 +24,14 @@ jobs:
         echo "=== All files ==="
         find . -type f -not -path './.git/*' | head -50
     
-    - name: Create Xcode project directory
-      run: mkdir -p F1OOB.xcodeproj
-    
-    - name: Download project.pbxproj
+    - name: Create Xcode project
       run: |
-        # Create a minimal project.pbxproj using Python (no heredoc)
-        python3 << 'PYEOF'
-project_content = '''// !$*UTF8*$!
+        mkdir -p F1OOB.xcodeproj
+        python3 -c "
+        content = open('/dev/stdin').read()
+        open('F1OOB.xcodeproj/project.pbxproj', 'w').write(content)
+        " << 'ENDOFFILE'
+// !$*UTF8*$!
 {
 	archiveVersion = 1;
 	classes = {
@@ -249,11 +249,7 @@ project_content = '''// !$*UTF8*$!
 	};
 	rootObject = AA0000000000000000000013 /* Project object */;
 }
-'''
-        with open('F1OOB.xcodeproj/project.pbxproj', 'w') as f:
-            f.write(project_content)
-        print("Created project.pbxproj")
-        PYEOF
+ENDOFFILE
     
     - name: Build for iOS
       run: |
